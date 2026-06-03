@@ -65,8 +65,8 @@ Generated cards also record:
 - ESMC embedding model name/revision/pooling and final pair-model parameters,
 - calibration method and calibration metrics,
 - Brier score and 10-bin expected calibration error when calibration is usable.
-- baseline PR-AUC comparisons for degree prior, embedding cosine, role-only,
-  and random scores.
+- baseline PR-AUC comparisons for degree prior, embedding cosine,
+  family-pair transfer, role-only, and random scores.
 - PU pseudo-negative sampling counts by species, degree-matching metadata,
   easy-negative counts, and the configured homolog-near exclusion rule. The v0
   homology exclusion uses ligand/receptor family or homology-cluster labels
@@ -86,3 +86,9 @@ After building a predicted LR table, use
 `pc.evaluate_predicted_lr_density_prior(...)` to check whether the selected edge
 density remains close to the clade-aware prior recorded in the prediction
 summary.
+
+`family_pair_transfer` is a conservative orthology-transfer proxy: if
+`ligand_family` and `receptor_family` or homology-cluster labels are present,
+it scores a held-out pair when that ligand-family plus receptor-family
+combination appears as a positive in the training split. It does not infer new
+orthology mappings.

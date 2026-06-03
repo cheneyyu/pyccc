@@ -87,8 +87,8 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - PR-AUC, ROC-AUC, and top-K precision at K = 100, 500, 1000, and 5000.
 - held-out probability calibration using isotonic regression by default,
 - a final deployment model refit on all training pairs after validation.
-- baseline comparisons against degree prior, embedding cosine, role-only, and
-  random scores.
+- baseline comparisons against degree prior, embedding cosine, family-pair
+  transfer, role-only, and random scores.
 - model-stack metadata: training resources, species/clades included, positive
   and pseudo-negative counts by species, embedding model name/revision/pooling,
   and the serialized pair-model parameters.

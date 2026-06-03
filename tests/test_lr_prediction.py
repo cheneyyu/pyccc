@@ -185,6 +185,7 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
     assert "degree_prior" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert "family_pair_transfer" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
     assert "embedding_cosine" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_pr_auc"]
     assert "top_100" in card["validation_report"]["leave_species_out"]["summary"]["mean_top_k_precision"]
     assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]

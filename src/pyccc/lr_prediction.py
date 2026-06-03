@@ -1359,6 +1359,7 @@ def _baseline_metrics(
     scores = {
         "degree_prior": _degree_prior_scores(train_pairs, test_pairs),
         "embedding_cosine": _feature_scores(test_features, "cosine"),
+        "family_pair_transfer": _family_pair_transfer_scores(train_pairs, test_pairs),
         "role_only": _role_only_scores(test_pairs),
         "random": np.random.default_rng(random_state).random(len(test_pairs)),
     }
@@ -1383,6 +1384,27 @@ def _feature_scores(features, feature_name: str) -> np.ndarray:
     if feature_name == "cosine":
         values = (values + 1.0) / 2.0
     return values
+
+
+def _family_pair_transfer_scores(train_pairs: pd.DataFrame, test_pairs: pd.DataFrame) -> np.ndarray:
+    required = {"ligand_family", "receptor_family", "label"}
+    if not required.issubset(train_pairs.columns) or not {"ligand_family", "receptor_family"}.issubset(test_pairs.columns):
+        return np.zeros(len(test_pairs), dtype=float)
+    positives = train_pairs[train_pairs["label"].astype(int) == 1]
+    positive_family_pairs = {
+        (str(row.ligand_family), str(row.receptor_family))
+        for row in positives.itertuples(index=False)
+        if str(row.ligand_family) and str(row.receptor_family)
+    }
+    if not positive_family_pairs:
+        return np.zeros(len(test_pairs), dtype=float)
+    return np.asarray(
+        [
+            1.0 if (str(row.ligand_family), str(row.receptor_family)) in positive_family_pairs else 0.0
+            for row in test_pairs.itertuples(index=False)
+        ],
+        dtype=float,
+    )
 
 
 def _role_only_scores(test_pairs: pd.DataFrame) -> np.ndarray:
