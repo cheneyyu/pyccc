@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from anndata import AnnData
 
 import pyccc as pc
@@ -101,3 +102,51 @@ def test_dbfree_production_stack_rejects_implicit_fixture_models(tmp_path):
     assert "LightGBM pair ranker" in message
     assert "clade-aware density" in message
     assert "allow_fixture_models=True" in message
+
+
+def test_dbfree_wrapper_can_bypass_role_model_with_explicit_candidates(tmp_path):
+    fasta = tmp_path / "proteins.fa"
+    fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVVV\n>pX gene=X1\nMAAAAA\n", encoding="utf-8")
+    adata = AnnData(
+        np.array([[4, 0, 1], [5, 0, 1], [0, 3, 1], [0, 4, 1]], dtype=float),
+        obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"]}, index=[f"c{i}" for i in range(4)]),
+        var=pd.DataFrame({"gene_id": ["L1", "R1", "X1"]}, index=["L1", "R1", "X1"]),
+    )
+
+    predicted = pc.predict_lr_dbfree(
+        adata,
+        protein_fasta=fasta,
+        gene_id_key="gene_id",
+        model="heuristic",
+        role_model=None,
+        ligand_candidates=["L1"],
+        receptor_candidates=["R1"],
+        embedding_backend="hash",
+        density_prior=1.0,
+        min_score=0.0,
+        max_pairs=1,
+        allow_fixture_models=True,
+        expression_min_fraction=0.0,
+    )
+
+    warnings = ";".join(predicted.interactions["warning"].astype(str))
+    summary = predicted.metadata["prediction_summary"]
+    assert predicted.interactions[["ligand", "receptor"]].iloc[0].tolist() == ["L1", "R1"]
+    assert "explicit_candidate_role_bypass" in warnings
+    assert predicted.metadata["dbfree_model_stack"]["role_model"] == "explicit_candidates"
+    assert predicted.metadata["dbfree_model_stack"]["role_model_bypassed"]
+    assert summary.loc[0, "role_model"] == "explicit_candidates"
+    assert bool(summary.loc[0, "role_model_bypassed"])
+
+    with pytest.raises(ValueError, match="requires both"):
+        pc.predict_lr_dbfree(
+            adata,
+            protein_fasta=fasta,
+            gene_id_key="gene_id",
+            model="heuristic",
+            role_model=None,
+            ligand_candidates=["L1"],
+            embedding_backend="hash",
+            density_prior=1.0,
+            allow_fixture_models=True,
+        )

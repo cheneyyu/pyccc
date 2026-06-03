@@ -127,6 +127,24 @@ candidates = pc.generate_lr_candidates_dbfree(
 )
 ```
 
+In the end-to-end wrapper, explicit candidate lists can also bypass the role
+classifier by setting `role_model=None`. This requires both ligand and
+receptor candidate lists and records `explicit_candidate_role_bypass` in the
+warning column:
+
+```python
+predicted_db = pc.predict_lr_dbfree(
+    adata,
+    protein_fasta="target.longest_protein.fa",
+    gene_id_key="gene_id",
+    role_model=None,
+    ligand_candidates="known_secreted_genes.txt",
+    receptor_candidates="known_surface_genes.txt",
+    model="models/universal_esmc300m_lgbm_v0",
+    density_prior="auto",
+)
+```
+
 ## Density Thresholding
 
 ```python

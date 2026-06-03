@@ -390,7 +390,7 @@ def predict_lr_dbfree(
     species_name: str = "target_species",
     species_hint: str = "unknown",
     model: str | Path = DEFAULT_DBFREE_PAIR_MODEL,
-    role_model: str | Path = DEFAULT_DBFREE_ROLE_MODEL,
+    role_model: str | Path | None = DEFAULT_DBFREE_ROLE_MODEL,
     density_prior: pd.DataFrame | float | str = "auto",
     min_score: float = 0.50,
     max_pairs: int = 50000,
@@ -410,9 +410,11 @@ def predict_lr_dbfree(
 
     if (cds_fasta is None) == (protein_fasta is None):
         raise ValueError("Provide exactly one of `cds_fasta` or `protein_fasta`.")
+    role_model_bypassed = _role_model_bypassed(role_model, ligand_candidates, receptor_candidates)
     _validate_dbfree_prediction_stack(
         model=model,
         role_model=role_model,
+        role_model_bypassed=role_model_bypassed,
         density_prior=density_prior,
         embedding_backend=embedding_backend,
         embedding_model_name=embedding_model_name,
@@ -428,7 +430,11 @@ def predict_lr_dbfree(
         cache_dir=Path(cache_dir) / "esmc" if cache_dir is not None else None,
         backend=embedding_backend,
     )
-    roles = predict_protein_roles(proteins, emb, model=role_model)
+    roles = (
+        _explicit_candidate_roles(proteins, ligand_candidates, receptor_candidates)
+        if role_model_bypassed
+        else predict_protein_roles(proteins, emb, model=role_model)
+    )
     candidates = generate_lr_candidates_dbfree(
         adata,
         proteins,
@@ -468,7 +474,8 @@ def predict_lr_dbfree(
         "embedding_model_name": embedding_model_name,
         "embedding_model_revision": embedding_model_revision or "",
         "embedding_backend": resolved_embedding_backend,
-        "role_model": str(role_model),
+        "role_model": "explicit_candidates" if role_model_bypassed else str(role_model),
+        "role_model_bypassed": bool(role_model_bypassed),
         "pair_model": str(model),
         "pair_model_name": pair_metadata["model_name"],
         "density_prior": "auto_from_pair_model" if isinstance(density_prior, str) and density_prior == "auto" else "user_supplied",
@@ -482,7 +489,8 @@ def predict_lr_dbfree(
         summary["embedding_model_name"] = embedding_model_name
         summary["embedding_model_revision"] = embedding_model_revision or ""
         summary["embedding_backend"] = db.metadata["dbfree_model_stack"]["embedding_backend"]
-        summary["role_model"] = str(role_model)
+        summary["role_model"] = "explicit_candidates" if role_model_bypassed else str(role_model)
+        summary["role_model_bypassed"] = bool(role_model_bypassed)
         summary["pair_model"] = str(model)
         summary["pair_model_name"] = pair_metadata["model_name"]
         summary["density_groupby"] = "clade"
@@ -492,6 +500,8 @@ def predict_lr_dbfree(
     extra_warnings = []
     if str(role_model) == "heuristic":
         extra_warnings.append("heuristic_role_model")
+    if role_model_bypassed:
+        extra_warnings.append("explicit_candidate_role_bypass")
     if resolved_embedding_backend == "hash":
         extra_warnings.append("hash_embedding_backend")
     if gene_match_summary["n_expression_only_genes"] > 0:
@@ -501,6 +511,35 @@ def predict_lr_dbfree(
     if extra_warnings:
         _add_prediction_warnings(db, extra_warnings)
     return db
+
+
+def _role_model_bypassed(
+    role_model: str | Path | None,
+    ligand_candidates: str | Path | Sequence[str] | None,
+    receptor_candidates: str | Path | Sequence[str] | None,
+) -> bool:
+    if role_model is not None and str(role_model).lower() not in {"none", "bypass", "explicit_candidates"}:
+        return False
+    if ligand_candidates is None or receptor_candidates is None:
+        raise ValueError("Bypassing the role model requires both `ligand_candidates` and `receptor_candidates`.")
+    return True
+
+
+def _explicit_candidate_roles(
+    proteins: pd.DataFrame,
+    ligand_candidates: str | Path | Sequence[str] | None,
+    receptor_candidates: str | Path | Sequence[str] | None,
+) -> pd.DataFrame:
+    ligands = _candidate_list(ligand_candidates or [])
+    receptors = _candidate_list(receptor_candidates or [])
+    out = proteins[["gene_id", "protein_id"]].copy()
+    out["ligand_like_score"] = out["gene_id"].astype(str).isin(ligands).astype(float)
+    out["receptor_like_score"] = out["gene_id"].astype(str).isin(receptors).astype(float)
+    out["secreted_like_score"] = out["ligand_like_score"]
+    out["membrane_like_score"] = out["receptor_like_score"]
+    out["ecm_like_score"] = 0.0
+    out["out_of_domain_score"] = 0.0
+    return out
 
 
 def _gene_match_summary(gene_match: pd.DataFrame) -> dict[str, int]:
@@ -542,7 +581,8 @@ def _auto_density_prior(density_prior: pd.DataFrame | float | str, model: str | 
 def _validate_dbfree_prediction_stack(
     *,
     model: str | Path,
-    role_model: str | Path,
+    role_model: str | Path | None,
+    role_model_bypassed: bool,
     density_prior: pd.DataFrame | float | str,
     embedding_backend: str,
     embedding_model_name: str,
@@ -558,7 +598,9 @@ def _validate_dbfree_prediction_stack(
         problems.append("production DB-free prediction requires ESMC-300M embeddings, not the hash fixture backend")
     if not ("esmc" in model_name_lower and "300m" in model_name_lower):
         problems.append(f"production DB-free prediction expects an ESMC-300M model name, got `{embedding_model_name}`")
-    if str(role_model) == "heuristic":
+    if role_model_bypassed:
+        pass
+    elif str(role_model) == "heuristic":
         problems.append("production DB-free prediction requires a trained LightGBM protein role classifier")
     else:
         role_path = Path(role_model)
