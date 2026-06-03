@@ -258,7 +258,7 @@ def evaluate_lr_model_quality_gates(
     model_card: dict[str, object] | str | Path,
     *,
     required_splits: Sequence[str] = ("leave_species_out",),
-    required_baselines: Sequence[str] = ("degree_prior", "embedding_cosine", "role_only", "random"),
+    required_baselines: Sequence[str] = ("degree_prior", "embedding_cosine", "expression_only", "role_only", "density_matched_random", "random"),
     min_pr_auc_delta: float = 0.0,
     top_k: str | None = None,
     min_top_k_delta: float | None = None,
@@ -861,7 +861,7 @@ def _training_pairs(
         positives = interactions.copy()
     positives = _positive_pair_metadata(positives)
     positives["label"] = 1
-    for col in ("negative_strategy", "negative_seed", "degree_matching", "excluded_homology_radius", "easy_negative"):
+    for col in ("negative_strategy", "negative_seed", "degree_matching", "excluded_homology_radius", "positive_resource_blacklist_for_fold", "easy_negative"):
         positives[col] = ""
     rng = np.random.default_rng(random_state)
     negatives = []
@@ -880,6 +880,7 @@ def _training_pairs(
         receptors, receptor_p = _degree_pool(species_sub["receptor_gene"])
         positive_set = positive_set_by_species[str(species)]
         positive_family_pairs = positive_family_pairs_by_species[str(species)]
+        positive_resource_blacklist = _positive_resource_blacklist(species_sub)
         target = len(sub) * negative_ratio
         easy_target = (
             min(int(np.ceil(target * easy_negative_fraction)), max(target - 1, 0))
@@ -915,9 +916,12 @@ def _training_pairs(
                     receptor_family=receptor_family,
                     ligand_role_score=_role_score_for_gene(species_sub, "ligand", lig),
                     receptor_role_score=_role_score_for_gene(species_sub, "receptor", rec),
+                    ligand_expression_fraction=_expression_fraction_for_gene(species_sub, "ligand", lig),
+                    receptor_expression_fraction=_expression_fraction_for_gene(species_sub, "receptor", rec),
                     negative_strategy=negative_strategy,
                     random_state=random_state,
                     excluded_homology_radius=excluded_homology_radius,
+                    positive_resource_blacklist_for_fold=positive_resource_blacklist,
                     easy_negative=False,
                 )
             )
@@ -930,6 +934,7 @@ def _training_pairs(
                 resource=resource,
                 sub=sub,
                 positive_set=positive_set,
+                positive_resource_blacklist_for_fold=positive_resource_blacklist,
                 negative_strategy=negative_strategy,
                 random_state=random_state,
                 excluded_homology_radius=excluded_homology_radius,
@@ -947,7 +952,7 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
             out[col] = default
     if "clade" not in out.columns:
         out["clade"] = ""
-    for col in ("ligand_role_score", "receptor_role_score"):
+    for col in ("ligand_role_score", "receptor_role_score", "ligand_expression_fraction", "receptor_expression_fraction"):
         if col not in out.columns:
             out[col] = ""
     for col in ("pathway", "annotation"):
@@ -975,6 +980,8 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
         "receptor_family",
         "ligand_role_score",
         "receptor_role_score",
+        "ligand_expression_fraction",
+        "receptor_expression_fraction",
         "pathway",
         "annotation",
     ]
@@ -1019,9 +1026,12 @@ def _negative_pair_row(
     receptor_family: str,
     ligand_role_score,
     receptor_role_score,
+    ligand_expression_fraction,
+    receptor_expression_fraction,
     negative_strategy: str,
     random_state: int,
     excluded_homology_radius: str,
+    positive_resource_blacklist_for_fold: str,
     easy_negative: bool,
 ) -> dict[str, object]:
     return {
@@ -1034,6 +1044,8 @@ def _negative_pair_row(
         "receptor_family": str(receptor_family),
         "ligand_role_score": ligand_role_score,
         "receptor_role_score": receptor_role_score,
+        "ligand_expression_fraction": ligand_expression_fraction,
+        "receptor_expression_fraction": receptor_expression_fraction,
         "pathway": "",
         "annotation": "",
         "label": 0,
@@ -1041,6 +1053,7 @@ def _negative_pair_row(
         "negative_seed": int(random_state),
         "degree_matching": not easy_negative,
         "excluded_homology_radius": excluded_homology_radius if excluded_homology_radius else "none",
+        "positive_resource_blacklist_for_fold": str(positive_resource_blacklist_for_fold),
         "easy_negative": bool(easy_negative),
     }
 
@@ -1069,6 +1082,7 @@ def _sample_easy_negative_rows(
     resource,
     sub: pd.DataFrame,
     positive_set: set[tuple[str, str]],
+    positive_resource_blacklist_for_fold: str,
     negative_strategy: str,
     random_state: int,
     excluded_homology_radius: str,
@@ -1096,9 +1110,12 @@ def _sample_easy_negative_rows(
                 receptor_family="",
                 ligand_role_score=0.0,
                 receptor_role_score=0.0,
+                ligand_expression_fraction=0.0,
+                receptor_expression_fraction=0.0,
                 negative_strategy=negative_strategy,
                 random_state=random_state,
                 excluded_homology_radius=excluded_homology_radius,
+                positive_resource_blacklist_for_fold=positive_resource_blacklist_for_fold,
                 easy_negative=True,
             )
         )
@@ -1116,6 +1133,7 @@ def _negative_sampling_summary(pairs: pd.DataFrame) -> dict[str, object]:
             "easy_negative_count": 0,
             "degree_matching": False,
             "excluded_homology_radius": "",
+            "positive_resource_blacklist_for_fold": "",
         }
     return {
         "n_positive": int(len(positives)),
@@ -1125,6 +1143,7 @@ def _negative_sampling_summary(pairs: pd.DataFrame) -> dict[str, object]:
         "easy_negative_count": int(pd.Series(negatives.get("easy_negative", False)).astype(bool).sum()),
         "degree_matching": bool(pd.Series(negatives.get("degree_matching", False)).astype(bool).any()),
         "excluded_homology_radius": ";".join(sorted(set(negatives.get("excluded_homology_radius", pd.Series(dtype=str)).astype(str)))),
+        "positive_resource_blacklist_for_fold": _join_semicolon_unique(negatives.get("positive_resource_blacklist_for_fold", pd.Series(dtype=str))),
         "negative_strategy": ";".join(sorted(set(negatives.get("negative_strategy", pd.Series(dtype=str)).astype(str)))),
     }
 
@@ -1190,6 +1209,31 @@ def _role_score_for_gene(frame: pd.DataFrame, side: str, gene: str) -> str:
         return ""
     values = pd.to_numeric(sub[score_col], errors="coerce").dropna()
     return "" if values.empty else str(float(values.iloc[0]))
+
+
+def _expression_fraction_for_gene(frame: pd.DataFrame, side: str, gene: str) -> str:
+    gene_col = f"{side}_gene"
+    expr_col = f"{side}_expression_fraction"
+    if expr_col not in frame.columns:
+        return ""
+    sub = frame[frame[gene_col].astype(str) == str(gene)]
+    if sub.empty:
+        return ""
+    values = pd.to_numeric(sub[expr_col], errors="coerce").dropna()
+    return "" if values.empty else str(float(values.iloc[0]))
+
+
+def _positive_resource_blacklist(frame: pd.DataFrame) -> str:
+    if "resource" not in frame.columns:
+        return ""
+    return _join_semicolon_unique(frame["resource"])
+
+
+def _join_semicolon_unique(values: pd.Series) -> str:
+    parts = []
+    for value in values.dropna().astype(str):
+        parts.extend(part for part in value.split(";") if part)
+    return ";".join(sorted(set(parts)))
 
 
 def _random_train_test_indices(y: np.ndarray, *, random_state: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1428,6 +1472,8 @@ def _leave_one_group_report(
         train_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() != str(group))
         fold = _evaluate_pair_split(pairs, embeddings, y, train_idx, test_idx, model=model, feature_encoder=feature_encoder, random_state=random_state)
         fold["held_out"] = str(group)
+        if group_col == "resource":
+            fold["positive_resource_blacklist_for_fold"] = str(group)
         folds.append(fold)
     usable = [fold for fold in folds if fold["status"] == "ok"]
     return {"status": "ok" if usable else "skipped", "folds": folds, "summary": _fold_summary(usable)}
@@ -1556,7 +1602,9 @@ def _baseline_metrics(
         "degree_prior": _degree_prior_scores(train_pairs, test_pairs),
         "embedding_cosine": _feature_scores(test_features, "cosine"),
         "family_pair_transfer": _family_pair_transfer_scores(train_pairs, test_pairs),
+        "expression_only": _expression_only_scores(test_pairs),
         "role_only": _role_only_scores(test_pairs),
+        "density_matched_random": _density_matched_random_scores(train_pairs, test_pairs, random_state=random_state),
         "random": np.random.default_rng(random_state).random(len(test_pairs)),
     }
     return {name: _classification_metrics(y_test, values) for name, values in scores.items()}
@@ -1607,6 +1655,27 @@ def _role_only_scores(test_pairs: pd.DataFrame) -> np.ndarray:
     ligand = pd.to_numeric(test_pairs.get("ligand_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
     receptor = pd.to_numeric(test_pairs.get("receptor_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
     return (ligand + receptor) / 2.0
+
+
+def _expression_only_scores(test_pairs: pd.DataFrame) -> np.ndarray:
+    ligand = pd.to_numeric(test_pairs.get("ligand_expression_fraction", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
+    receptor = pd.to_numeric(test_pairs.get("receptor_expression_fraction", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
+    values = ligand * receptor
+    return np.clip(values, 0.0, 1.0)
+
+
+def _density_matched_random_scores(train_pairs: pd.DataFrame, test_pairs: pd.DataFrame, *, random_state: int) -> np.ndarray:
+    rng = np.random.default_rng(random_state)
+    n = len(test_pairs)
+    if n == 0:
+        return np.asarray([], dtype=float)
+    labels = pd.to_numeric(train_pairs.get("label", pd.Series(dtype=float)), errors="coerce").dropna()
+    density = float(labels.mean()) if not labels.empty else 0.5
+    n_high = int(np.clip(round(density * n), 1, n))
+    scores = rng.random(n) * 0.1
+    high = rng.choice(n, size=n_high, replace=False)
+    scores[high] = 0.9 + rng.random(n_high) * 0.1
+    return scores
 
 
 def _family_failure_cases(
@@ -1967,6 +2036,7 @@ def _model_card_markdown(card: dict[str, object]) -> str:
                 f"- Easy pseudo-negatives: {sampling.get('easy_negative_count', 0)}",
                 f"- Degree matching: {sampling.get('degree_matching', False)}",
                 f"- Homology exclusion: `{sampling.get('excluded_homology_radius', '')}`",
+                f"- Positive resource blacklist for folds: `{sampling.get('positive_resource_blacklist_for_fold', '')}`",
             ]
         )
     repeat_report = card.get("negative_repeat_report", {})

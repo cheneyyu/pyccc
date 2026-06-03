@@ -91,15 +91,17 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - held-out probability calibration using isotonic regression by default,
 - a final deployment model refit on all training pairs after validation.
 - baseline comparisons against degree prior, embedding cosine, family-pair
-  transfer, role-only, and random scores for PR-AUC and top-K ranker metrics.
+  transfer, expression-only, role-only, density-matched random, and random
+  scores for PR-AUC and top-K ranker metrics.
 - ligand/receptor-family failure case summaries for held-out folds when
   family or homology-cluster labels are present.
 - model-stack metadata: training resources, species/clades included, positive
   and pseudo-negative counts by species, embedding model name/revision/backend/
   pooling, and the serialized pair-model parameters.
 - PU pseudo-negative sampling metadata, including positives/negatives by
-  species, degree matching, the easy-negative count, and family-pair homology
-  exclusion when ligand/receptor family or homology-cluster labels are present.
+  species, degree matching, the easy-negative count,
+  `positive_resource_blacklist_for_fold`, and family-pair homology exclusion
+  when ligand/receptor family or homology-cluster labels are present.
 - repeated PU negative-sampling validation summaries, including PR-AUC/ROC-AUC
   mean, standard deviation, and variance by split when `--negative-repeats` is
   greater than one.

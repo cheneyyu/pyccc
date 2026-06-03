@@ -20,6 +20,8 @@ def _fixture_training():
             "receptor_family": ["rfam1", "rfam2", "rfam3", "rfam4"],
             "ligand_role_score": [0.9, 0.8, 0.7, 0.6],
             "receptor_role_score": [0.9, 0.8, 0.7, 0.6],
+            "ligand_expression_fraction": [0.8, 0.7, 0.6, 0.5],
+            "receptor_expression_fraction": [0.75, 0.65, 0.55, 0.45],
             "evidence_type": ["curated_direct"] * 4,
             "is_positive_label": [True] * 4,
         }
@@ -138,6 +140,7 @@ def test_training_pairs_exclude_positive_family_pair_neighbors():
     )
     assert negatives["degree_matching"].astype(bool).all()
     assert set(negatives["excluded_homology_radius"]) == {"family_pair"}
+    assert set(negatives["positive_resource_blacklist_for_fold"]) == {"fixture"}
 
 
 def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
@@ -164,6 +167,7 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["metrics"]["n_negative"] > 0
     assert card["negative_sampling"]["negative_strategy"] == "pu_degree_matched"
     assert card["negative_sampling"]["excluded_homology_radius"] == "family_pair"
+    assert card["negative_sampling"]["positive_resource_blacklist_for_fold"] == "fixture_a;fixture_b"
     assert card["negative_repeats"] == 2
     assert card["negative_repeat_report"]["status"] == "ok"
     assert card["negative_repeat_report"]["summary"]["random_stratified"]["n_usable_repeats"] == 2
@@ -190,6 +194,9 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
     assert "degree_prior" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert "expression_only" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert "density_matched_random" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert card["validation_report"]["leave_resource_out"]["folds"][0]["positive_resource_blacklist_for_fold"] in {"fixture_a", "fixture_b"}
     assert card["validation_report"]["random_stratified"]["family_failure_cases"]
     family_case = card["validation_report"]["random_stratified"]["family_failure_cases"][0]
     assert {"ligand_family", "receptor_family", "n_pairs", "failure_score"}.issubset(family_case)
@@ -205,9 +212,11 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]
     assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_recall"]
     assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_enrichment"]
+    assert "expression_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]
+    assert "density_matched_random" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]
     gates = pc.evaluate_lr_model_quality_gates(card, required_splits=["leave_species_out"], min_pr_auc_delta=-1.0)
     assert gates.attrs["passed"]
-    assert {"degree_prior", "embedding_cosine", "role_only", "random"}.issubset(set(gates["baseline"]))
+    assert {"degree_prior", "embedding_cosine", "expression_only", "role_only", "density_matched_random", "random"}.issubset(set(gates["baseline"]))
     top_k_gates = pc.evaluate_lr_model_quality_gates(
         card,
         required_splits=["leave_species_out"],
