@@ -173,6 +173,18 @@ def _spatial_weight_tables(coords: np.ndarray, groups: np.ndarray, *, radius: fl
 
 def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
+    metadata_cols = [
+        "original_ligand",
+        "original_receptor",
+        "matched_ligand",
+        "matched_receptor",
+        "ligand_match_expression_delta",
+        "receptor_match_expression_delta",
+        "ligand_match_role_delta",
+        "receptor_match_role_delta",
+        "ligand_match_degree_delta",
+        "receptor_match_degree_delta",
+    ]
     for kernel, weights in weight_tables.items():
         for lr_row in lr.itertuples(index=False):
             ligand = str(lr_row.ligand)
@@ -183,20 +195,22 @@ def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables:
                 target_expr = float(expr_means.loc[str(weight_row.target), receptor])
                 expression_score = source_expr * target_expr
                 spatial_score = expression_score * float(weight_row.spatial_weight)
-                rows.append(
-                    {
-                        "ligand": ligand,
-                        "receptor": receptor,
-                        "source": str(weight_row.source),
-                        "target": str(weight_row.target),
-                        "kernel": kernel,
-                        "expression_score": expression_score,
-                        "spatial_weight": float(weight_row.spatial_weight),
-                        "spatial_ccc_score": spatial_score,
-                        "model_score": model_score,
-                        "model_weighted_spatial_ccc_score": spatial_score * model_score,
-                    }
-                )
+                row_out = {
+                    "ligand": ligand,
+                    "receptor": receptor,
+                    "source": str(weight_row.source),
+                    "target": str(weight_row.target),
+                    "kernel": kernel,
+                    "expression_score": expression_score,
+                    "spatial_weight": float(weight_row.spatial_weight),
+                    "spatial_ccc_score": spatial_score,
+                    "model_score": model_score,
+                    "model_weighted_spatial_ccc_score": spatial_score * model_score,
+                }
+                for col in metadata_cols:
+                    if hasattr(lr_row, col):
+                        row_out[col] = getattr(lr_row, col)
+                rows.append(row_out)
     return pd.DataFrame(rows)
 
 
@@ -253,40 +267,143 @@ def _null_distribution(
                 raise ValueError(f"Unsupported null model: {null_model}")
             score_cols = ["spatial_ccc_score", "model_weighted_spatial_ccc_score"]
             for score_col in score_cols:
-                grouped = scored.groupby(["ligand", "receptor", "kernel"], as_index=False)[score_col].mean()
+                grouped = _group_null_scores(scored, score_col=score_col)
                 for row in grouped.itertuples(index=False):
-                    rows.append(
-                        {
-                            "iteration": i,
-                            "null_model": null_model,
-                            "ligand": str(row.ligand),
-                            "receptor": str(row.receptor),
-                            "kernel": row.kernel,
-                            "score_type": score_col,
-                            "score_value": float(getattr(row, score_col)),
-                        }
-                    )
-    return pd.DataFrame(rows, columns=["iteration", "null_model", "ligand", "receptor", "kernel", "score_type", "score_value"])
+                    out = {
+                        "iteration": i,
+                        "null_model": null_model,
+                        "ligand": str(row.ligand),
+                        "receptor": str(row.receptor),
+                        "kernel": row.kernel,
+                        "score_type": score_col,
+                        "score_value": float(getattr(row, score_col)),
+                    }
+                    for col in _MATCHED_NULL_COLUMNS:
+                        if hasattr(row, col):
+                            out[col] = getattr(row, col)
+                    rows.append(out)
+    return pd.DataFrame(rows, columns=["iteration", "null_model", "ligand", "receptor", "kernel", "score_type", "score_value", *_MATCHED_NULL_COLUMNS])
+
+
+_MATCHED_NULL_COLUMNS = [
+    "matched_ligand",
+    "matched_receptor",
+    "ligand_match_expression_delta",
+    "receptor_match_expression_delta",
+    "ligand_match_role_delta",
+    "receptor_match_role_delta",
+    "ligand_match_degree_delta",
+    "receptor_match_degree_delta",
+]
+
+
+def _group_null_scores(scored: pd.DataFrame, *, score_col: str) -> pd.DataFrame:
+    scored = scored.copy()
+    if "original_ligand" in scored.columns and "original_receptor" in scored.columns:
+        scored["ligand"] = scored["original_ligand"].astype(str)
+        scored["receptor"] = scored["original_receptor"].astype(str)
+        aggregations = {score_col: (score_col, "mean")}
+        for col in _MATCHED_NULL_COLUMNS:
+            if col in scored.columns:
+                aggregations[col] = (col, "first")
+        return scored.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(**aggregations)
+    return scored.groupby(["ligand", "receptor", "kernel"], as_index=False)[score_col].mean()
 
 
 def _matched_random_lr(lr: pd.DataFrame, gene_expression: pd.Series, rng: np.random.Generator) -> pd.DataFrame:
-    ranked = gene_expression.sort_values()
-    genes = ranked.index.astype(str).to_numpy()
-    quantiles = pd.qcut(ranked.rank(method="first"), q=min(10, len(ranked)), labels=False, duplicates="drop")
-    quantile_lookup = dict(zip(ranked.index.astype(str), quantiles.astype(int), strict=True))
+    match_table = _gene_match_table(lr, gene_expression)
     rows = []
     for row in lr.itertuples(index=False):
-        lig_q = quantile_lookup.get(str(row.ligand), int(rng.integers(0, max(1, int(quantiles.max()) + 1))))
-        rec_q = quantile_lookup.get(str(row.receptor), int(rng.integers(0, max(1, int(quantiles.max()) + 1))))
-        rows.append({"ligand": _sample_quantile_gene(genes, quantiles, lig_q, rng), "receptor": _sample_quantile_gene(genes, quantiles, rec_q, rng)})
+        ligand_match = _sample_matched_gene(match_table, row, side="ligand", rng=rng)
+        receptor_match = _sample_matched_gene(match_table, row, side="receptor", rng=rng)
+        rows.append(
+            {
+                "ligand": ligand_match["gene"],
+                "receptor": receptor_match["gene"],
+                "original_ligand": str(row.ligand),
+                "original_receptor": str(row.receptor),
+                "matched_ligand": ligand_match["gene"],
+                "matched_receptor": receptor_match["gene"],
+                "ligand_match_expression_delta": ligand_match["expression_delta"],
+                "receptor_match_expression_delta": receptor_match["expression_delta"],
+                "ligand_match_role_delta": ligand_match["role_delta"],
+                "receptor_match_role_delta": receptor_match["role_delta"],
+                "ligand_match_degree_delta": ligand_match["degree_delta"],
+                "receptor_match_degree_delta": receptor_match["degree_delta"],
+            }
+        )
     return pd.DataFrame(rows)
 
 
-def _sample_quantile_gene(genes: np.ndarray, quantiles: pd.Series, quantile: int, rng: np.random.Generator) -> str:
-    candidates = genes[quantiles.to_numpy(dtype=int) == int(quantile)]
-    if len(candidates) == 0:
-        candidates = genes
-    return str(rng.choice(candidates))
+def _gene_match_table(lr: pd.DataFrame, gene_expression: pd.Series) -> pd.DataFrame:
+    genes = pd.Index(gene_expression.index.astype(str)).drop_duplicates()
+    frame = pd.DataFrame({"gene": genes.astype(str), "expression": gene_expression.reindex(genes).fillna(0.0).to_numpy(dtype=float)})
+    if frame.empty:
+        return frame
+    q = min(10, len(frame))
+    frame["expression_quantile"] = pd.qcut(frame["expression"].rank(method="first"), q=q, labels=False, duplicates="drop").astype(int)
+    ligand_degree = lr["ligand"].astype(str).value_counts()
+    receptor_degree = lr["receptor"].astype(str).value_counts()
+    frame["ligand_degree"] = frame["gene"].map(ligand_degree).fillna(0).astype(float)
+    frame["receptor_degree"] = frame["gene"].map(receptor_degree).fillna(0).astype(float)
+    frame["ligand_role_score"] = _role_lookup(lr, gene_col="ligand", score_col="ligand_role_score", default=0.5).reindex(frame["gene"]).fillna(0.5).to_numpy(dtype=float)
+    frame["receptor_role_score"] = _role_lookup(lr, gene_col="receptor", score_col="receptor_role_score", default=0.5).reindex(frame["gene"]).fillna(0.5).to_numpy(dtype=float)
+    return frame
+
+
+def _role_lookup(lr: pd.DataFrame, *, gene_col: str, score_col: str, default: float) -> pd.Series:
+    if score_col not in lr.columns:
+        return pd.Series(default, index=pd.Index([], dtype=str), dtype=float)
+    values = pd.DataFrame({"gene": lr[gene_col].astype(str), "score": pd.to_numeric(lr[score_col], errors="coerce")})
+    values = values.dropna()
+    if values.empty:
+        return pd.Series(default, index=pd.Index([], dtype=str), dtype=float)
+    return values.groupby("gene")["score"].mean()
+
+
+def _sample_matched_gene(match_table: pd.DataFrame, row, *, side: str, rng: np.random.Generator) -> dict[str, object]:
+    if match_table.empty:
+        gene = str(getattr(row, side))
+        return {"gene": gene, "expression_delta": np.nan, "role_delta": np.nan, "degree_delta": np.nan}
+    gene = str(getattr(row, side))
+    role_col = f"{side}_role_score"
+    degree_col = f"{side}_degree"
+    target = _target_match_values(match_table, row, side=side)
+    candidates = match_table.copy()
+    if len(candidates) > 1:
+        candidates = candidates[candidates["gene"].astype(str) != gene].copy()
+    candidates["expression_delta"] = (candidates["expression_quantile"].astype(float) - target["expression_quantile"]).abs()
+    candidates["role_delta"] = (candidates[role_col].astype(float) - target["role_score"]).abs()
+    candidates["degree_delta"] = (np.log1p(candidates[degree_col].astype(float)) - np.log1p(target["degree"])).abs()
+    candidates["_match_distance"] = candidates["expression_delta"] + candidates["role_delta"] + candidates["degree_delta"]
+    pool = candidates.nsmallest(min(10, len(candidates)), "_match_distance")
+    choice = pool.iloc[int(rng.integers(0, len(pool)))]
+    return {
+        "gene": str(choice["gene"]),
+        "expression_delta": float(choice["expression_delta"]),
+        "role_delta": float(choice["role_delta"]),
+        "degree_delta": float(choice["degree_delta"]),
+    }
+
+
+def _target_match_values(match_table: pd.DataFrame, row, *, side: str) -> dict[str, float]:
+    gene = str(getattr(row, side))
+    role_attr = f"{side}_role_score"
+    role_col = f"{side}_role_score"
+    degree_col = f"{side}_degree"
+    sub = match_table[match_table["gene"].astype(str) == gene]
+    if sub.empty:
+        return {
+            "expression_quantile": float(match_table["expression_quantile"].median()),
+            "role_score": float(getattr(row, role_attr, 0.5)),
+            "degree": 0.0,
+        }
+    item = sub.iloc[0]
+    return {
+        "expression_quantile": float(item["expression_quantile"]),
+        "role_score": float(getattr(row, role_attr, item[role_col])),
+        "degree": float(item[degree_col]),
+    }
 
 
 def _attach_null_stats(summary: pd.DataFrame, null: pd.DataFrame) -> pd.DataFrame:
