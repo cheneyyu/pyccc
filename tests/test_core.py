@@ -7,7 +7,6 @@ import importlib.util
 import os
 import shutil
 import subprocess
-import warnings
 import numpy as np
 import pandas as pd
 import pytest
@@ -212,75 +211,18 @@ def test_cellchat_score_method_and_parallel_permutations():
     pd.testing.assert_series_equal(serial.interactions["pvalue"], parallel.interactions["pvalue"])
 
 
-def test_array_backend_validates_and_falls_back_to_cpu(monkeypatch):
+def test_array_backend_validates_cpu_numpy_only():
     adata = make_adata()
     lr = pc.toy_lr_table()
 
     with pytest.raises(ValueError, match="array_backend"):
         pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="not-a-backend")
-
+    with pytest.raises(ValueError, match="array_backend"):
+        pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="auto")
     cpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="cpu")
-
-    def missing_cupy():
-        raise ModuleNotFoundError("cupy")
-
-    monkeypatch.setattr(analysis, "_cupy_module", missing_cupy)
-    with pytest.warns(RuntimeWarning, match="falling back to CPU"):
-        fallback = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="cupy")
-
+    numpy_backend = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="numpy")
     cols = ["source", "target", "ligand", "receptor", "prob"]
-    pd.testing.assert_frame_equal(cpu.interactions[cols], fallback.interactions[cols])
-
-
-def test_cupy_backend_sparse_mean_matches_cpu_without_fallback():
-    try:
-        analysis._cupy_module.cache_clear()
-        analysis._cupy_module()
-    except Exception as exc:
-        pytest.skip(f"CuPy/CUDA unavailable: {exc}")
-
-    adata = make_adata()
-    adata.X = sparse.csr_matrix(adata.X)
-    lr = pc.toy_lr_table()
-
-    cpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="cpu")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        gpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", array_backend="cupy")
-
-    assert not [warning for warning in caught if "CuPy" in str(warning.message)]
-    cols = ["source", "target", "ligand", "receptor", "prob"]
-    pd.testing.assert_frame_equal(cpu.interactions[cols], gpu.interactions[cols])
-
-
-def test_cupy_batched_permutations_and_sketches_match_cpu_without_fallback():
-    try:
-        analysis._cupy_module.cache_clear()
-        analysis._cupy_module()
-    except Exception as exc:
-        pytest.skip(f"CuPy/CUDA unavailable: {exc}")
-
-    adata = make_adata()
-    adata.X = sparse.csr_matrix(adata.X)
-    lr = pc.toy_lr_table()
-
-    perm_cpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", n_permutations=5, random_state=19, array_backend="cpu")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        perm_gpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", n_permutations=5, random_state=19, array_backend="cupy")
-    assert not [warning for warning in caught if "CuPy" in str(warning.message)]
-
-    perm_cols = ["source", "target", "ligand", "receptor", "pathway", "prob", "pvalue"]
-    pd.testing.assert_frame_equal(perm_cpu.interactions[perm_cols], perm_gpu.interactions[perm_cols], check_dtype=False, check_exact=False, rtol=1e-12, atol=1e-12)
-
-    sketch_cpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", downsample_per_group=1, downsample_repeats=4, random_state=23, array_backend="cpu")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        sketch_gpu = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="mean", downsample_per_group=1, downsample_repeats=4, random_state=23, array_backend="cupy")
-    assert not [warning for warning in caught if "CuPy" in str(warning.message)]
-
-    sketch_cols = ["source", "target", "ligand", "receptor", "pathway", "prob", "prob_std", "stability", "sketch_repeats", "sketch_present"]
-    pd.testing.assert_frame_equal(sketch_cpu.interactions[sketch_cols], sketch_gpu.interactions[sketch_cols], check_dtype=False, check_exact=False, rtol=1e-12, atol=1e-12)
+    pd.testing.assert_frame_equal(cpu.interactions[cols], numpy_backend.interactions[cols])
 
 
 def test_cellchat_score_matches_reference_formula_with_cofactors():
@@ -403,7 +345,7 @@ def test_truncated_mean_and_overexpressed_gate():
     assert set(gated.interactions["source"] + "->" + gated.interactions["target"]) == {"A->B", "C->B"}
 
 
-def test_clipped_mean_matches_sparse_and_cupy_when_available():
+def test_clipped_mean_matches_sparse():
     adata = make_adata()
     lr = pc.toy_lr_table()
     dense = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="clipped_mean", clip_quantile=0.95)
@@ -415,20 +357,8 @@ def test_clipped_mean_matches_sparse_and_cupy_when_available():
     cols = ["source", "target", "ligand", "receptor", "prob"]
     pd.testing.assert_frame_equal(dense.interactions[cols], sparse_res.interactions[cols])
 
-    try:
-        analysis._cupy_module.cache_clear()
-        analysis._cupy_module()
-    except Exception as exc:
-        pytest.skip(f"CuPy/CUDA unavailable: {exc}")
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cupy_res = pc.compute_communication(sparse_adata, "cell_type", lr, min_pct=0.0, aggregate="clipped_mean", clip_quantile=0.95, array_backend="cupy")
-    assert not [warning for warning in caught if "CuPy" in str(warning.message)]
-    pd.testing.assert_frame_equal(dense.interactions[cols], cupy_res.interactions[cols])
-
-
-def test_gated_mean_matches_sparse_and_cupy_when_available():
+def test_gated_mean_matches_sparse():
     adata = make_adata()
     lr = pc.toy_lr_table()
     dense = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="gated_mean", clip_quantile=0.95)
@@ -439,18 +369,6 @@ def test_gated_mean_matches_sparse_and_cupy_when_available():
 
     cols = ["source", "target", "ligand", "receptor", "prob"]
     pd.testing.assert_frame_equal(dense.interactions[cols], sparse_res.interactions[cols])
-
-    try:
-        analysis._cupy_module.cache_clear()
-        analysis._cupy_module()
-    except Exception as exc:
-        pytest.skip(f"CuPy/CUDA unavailable: {exc}")
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cupy_res = pc.compute_communication(sparse_adata, "cell_type", lr, min_pct=0.0, aggregate="gated_mean", clip_quantile=0.95, array_backend="cupy")
-    assert not [warning for warning in caught if "CuPy" in str(warning.message)]
-    pd.testing.assert_frame_equal(dense.interactions[cols], cupy_res.interactions[cols])
 
 
 def test_export_cellchat_bridge_tables_and_rds_smoke(tmp_path):

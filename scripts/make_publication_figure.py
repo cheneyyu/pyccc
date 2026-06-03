@@ -184,16 +184,16 @@ def panel_summary_tradeoff() -> None:
     frame = frame[~frame["method"].eq("tri_mean_cpu")].copy()
     frame["speedup_vs_trimean_cpu"] = tri_seconds / frame["seconds"]
     label_map = {
-        "clipped_p99_cupy": "clipped p99",
-        "clipped_p95_cupy": "clipped p95",
-        "gated_p99_cupy": "gated p99",
-        "gated_p95_cupy": "gated p95",
+        "clipped_p99_cpu": "clipped p99",
+        "clipped_p95_cpu": "clipped p95",
+        "gated_p99_cpu": "gated p99",
+        "gated_p95_cpu": "gated p95",
     }
     label_offset = {
-        "clipped_p99_cupy": (0.035, 0.020),
-        "clipped_p95_cupy": (0.035, -0.024),
-        "gated_p99_cupy": (0.035, 0.018),
-        "gated_p95_cupy": (0.035, -0.024),
+        "clipped_p99_cpu": (0.025, 0.020),
+        "clipped_p95_cpu": (0.025, -0.024),
+        "gated_p99_cpu": (0.025, 0.018),
+        "gated_p95_cpu": (0.025, -0.024),
     }
     color_map = {"clipped_mean": ORANGE, "gated_mean": GREEN}
     marker_map = {0.99: "o", 0.95: "s"}
@@ -221,13 +221,13 @@ def panel_summary_tradeoff() -> None:
         )
     ax.axvline(1.0, color=LIGHT, linewidth=0.9)
     ax.axhline(0.9, color=LIGHT, linewidth=0.9)
-    ax.set_xlim(0.55, 1.95)
+    ax.set_xlim(0.48, 1.20)
     ax.set_ylim(0.50, 1.01)
     ax.set_xlabel("Speed vs triMean CPU")
     ax.set_ylabel("Spearman to triMean")
-    ax.set_title("GPU-friendly summaries")
+    ax.set_title("Robust mean summaries")
     style_axes(ax, grid=False)
-    ax.text(0.58, 0.97, "dot size: top-100 overlap", ha="left", va="top", fontsize=6.0, color=GRAY)
+    ax.text(0.50, 0.97, "dot size: top-100 overlap", ha="left", va="top", fontsize=6.0, color=GRAY)
     save_panel(fig, "panel_d_summary_tradeoff")
 
 
@@ -255,7 +255,7 @@ Panel B shows numerical agreement with direct CellChat R on the official human s
 
 Panel C compares total time for within-sample CCC, two-condition differential CCC, and matched visual outputs on a real 1,000,000-cell sample from the CELLxGENE Human Immune Health Atlas. The benchmark uses raw.X for all methods because the h5ad main X matrix is scaled and contains negative values.
 
-Panel D summarizes the tradeoff between GPU-friendly mean summaries and CellChat triMean similarity on the local CELLxGENE benchmark. The gated mean variants preserve higher rank agreement to triMean than plain clipped means while remaining faster than the triMean CPU reference in this environment.
+Panel D summarizes the tradeoff between outlier-robust mean summaries and CellChat triMean similarity on the local CELLxGENE benchmark. The gated mean variants preserve higher rank agreement to triMean than plain clipped means while remaining slightly faster than the triMean CPU reference in this environment.
 
 Statistical notes. All reported communication scores are inferred group-level quantities from expression summaries and ligand-receptor metadata, not direct physical interaction measurements. The CellChat parity panel uses the same filtered LR table and metadata as the R reference. The 1M-cell runtime panel reports one local run on the stated environment and should be interpreted as an artifact-level benchmark rather than a universal performance guarantee.
 """
@@ -287,7 +287,7 @@ def write_latex() -> Path:
 \textbf{Figure 1.} pyccc keeps CellChat-like CCC in an AnnData-native sparse workflow,
 matches CellChat R numerics on the official tutorial benchmark, accelerates the
 real 1M-cell workflow by avoiding CellChat's dense cell-level path, and exposes
-GPU-friendly summary options with explicit similarity tradeoffs.
+outlier-robust summary options with explicit similarity tradeoffs.
 }
 \end{document}
 """

@@ -4,8 +4,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable
-import os
-import weakref
 import warnings
 
 import numpy as np
@@ -19,7 +17,7 @@ VALID_AGGREGATES = {"mean", "clipped_mean", "gated_mean", "median", "tri_mean", 
 VALID_SCORE_METHODS = {"sqrt", "cellchat"}
 VALID_COMPLEX_AGGREGATES = {"auto", "min", "geometric_mean"}
 VALID_DE_METHODS = {"mean", "wilcoxon"}
-VALID_ARRAY_BACKENDS = {"auto", "cpu", "numpy", "cupy"}
+VALID_ARRAY_BACKENDS = {"cpu", "numpy"}
 
 
 @dataclass
@@ -679,35 +677,6 @@ def _repeated_downsample_rows(
     n_permutations: int,
 ) -> pd.DataFrame:
     if aggregate == "mean" and n_permutations == 0 and spatial_key is None and not population_size:
-        if array_backend == "cupy":
-            try:
-                return _repeated_downsample_rows_gpu_batched(
-                    adata,
-                    groupby,
-                    groups,
-                    lr,
-                    layer=layer,
-                    use_raw=use_raw,
-                    downsample_per_group=downsample_per_group,
-                    downsample_repeats=downsample_repeats,
-                    random_state=random_state,
-                    min_pct=min_pct,
-                    min_expr=min_expr,
-                    aggregate=aggregate,
-                    clip_quantile=clip_quantile,
-                    gene_symbols_key=gene_symbols_key,
-                    gene_lookup=gene_lookup,
-                    expression_genes=expression_genes,
-                    scale_expression_by_max=scale_expression_by_max,
-                    overexpressed_genes=overexpressed_genes,
-                    cofactor_adjust=cofactor_adjust,
-                    cofactor_kh=cofactor_kh,
-                    cofactor_hill=cofactor_hill,
-                    score_method=score_method,
-                    complex_aggregate=complex_aggregate,
-                )
-            except Exception as exc:
-                warnings.warn(f"CuPy batched sketches failed; falling back to per-sketch loop. Reason: {exc}", RuntimeWarning, stacklevel=2)
         try:
             return _repeated_downsample_rows_cpu_batched(
                 adata,
@@ -918,110 +887,6 @@ def _repeated_downsample_rows_cpu_batched(
     )
 
 
-def _repeated_downsample_rows_gpu_batched(
-    adata,
-    groupby: str,
-    groups: list[str],
-    lr: pd.DataFrame,
-    *,
-    layer: str | None,
-    use_raw: bool,
-    downsample_per_group: int,
-    downsample_repeats: int,
-    random_state: int | None,
-    min_pct: float,
-    min_expr: float,
-    aggregate: str,
-    clip_quantile: float,
-    gene_symbols_key: str | None,
-    gene_lookup: dict[str, str],
-    expression_genes: Iterable[str] | None,
-    scale_expression_by_max: bool,
-    overexpressed_genes: dict[str, set[str]] | None,
-    cofactor_adjust: bool,
-    cofactor_kh: float,
-    cofactor_hill: float,
-    score_method: str,
-    complex_aggregate: str,
-) -> pd.DataFrame:
-    cp = _cupy_module()
-    from cupyx.scipy import sparse as cupyx_sparse  # type: ignore[import-not-found]
-
-    x, var_names = _get_matrix(adata, layer=layer, use_raw=use_raw, gene_symbols_key=gene_symbols_key)
-    x, var_names = _subset_matrix_columns(x, var_names, expression_genes)
-    if not sparse.issparse(x):
-        raise TypeError("CuPy batched sketches currently require a scipy sparse matrix.")
-    x_gpu, x_positive_gpu, x_for_mean_gpu = _gpu_expression_matrices_for_mean(x, aggregate=aggregate, clip_quantile=clip_quantile)
-    del x_gpu
-
-    rng = np.random.default_rng(random_state)
-    labels = adata.obs[groupby].astype(str).to_numpy()
-    n_obs = int(labels.size)
-    n_groups = len(groups)
-    row_chunks = []
-    col_chunks = []
-    sketch_scales = []
-    for repeat in range(downsample_repeats):
-        repeat_indices = []
-        for group_idx, group in enumerate(groups):
-            idx = np.flatnonzero(labels == group)
-            if idx.size > downsample_per_group:
-                idx = rng.choice(idx, size=downsample_per_group, replace=False)
-            row_id = repeat * n_groups + group_idx
-            row_chunks.append(np.full(idx.size, row_id, dtype=np.int32))
-            col_chunks.append(idx.astype(np.int32, copy=False))
-            repeat_indices.append(idx)
-        if scale_expression_by_max:
-            selected = np.concatenate(repeat_indices) if repeat_indices else np.array([], dtype=int)
-            max_value = float(x[selected].max()) if selected.size else 0.0
-            sketch_scales.append(max_value if np.isfinite(max_value) and max_value > 0 else 1.0)
-        else:
-            sketch_scales.append(1.0)
-        rng.integers(0, np.iinfo(np.int32).max)
-    if not row_chunks:
-        out = _empty_interactions()
-        out["prob_std"] = pd.Series(dtype=float)
-        out["stability"] = pd.Series(dtype=float)
-        out["sketch_repeats"] = pd.Series(dtype=int)
-        out["sketch_present"] = pd.Series(dtype=int)
-        return out
-
-    row_np = np.concatenate(row_chunks)
-    col_np = np.concatenate(col_chunks)
-    counts = np.bincount(row_np, minlength=downsample_repeats * n_groups).reshape(downsample_repeats, n_groups).astype(float)
-    counts_safe = np.where(counts > 0, counts, 1.0)
-    group_matrix = cupyx_sparse.csr_matrix(
-        (cp.ones(row_np.size, dtype=cp.float64), (cp.asarray(row_np), cp.asarray(col_np))),
-        shape=(downsample_repeats * n_groups, n_obs),
-    )
-    counts_gpu = cp.asarray(counts, dtype=cp.float64)
-    counts_safe_gpu = cp.asarray(counts_safe, dtype=cp.float64)
-    means_gpu = (group_matrix @ x_for_mean_gpu).toarray().reshape(downsample_repeats, n_groups, len(var_names))
-    pcts_gpu = (group_matrix @ x_positive_gpu).toarray().reshape(downsample_repeats, n_groups, len(var_names))
-    means_gpu = cp.where(counts_gpu[:, :, None] > 0, means_gpu / counts_safe_gpu[:, :, None], 0.0)
-    means_gpu = means_gpu / cp.asarray(sketch_scales, dtype=cp.float64)[:, None, None]
-    pcts_gpu = cp.where(counts_gpu[:, :, None] > 0, pcts_gpu / counts_safe_gpu[:, :, None], 0.0)
-
-    return _score_lr_batch_summary_frame_gpu(
-        lr,
-        means_gpu,
-        pcts_gpu,
-        groups,
-        var_names=var_names,
-        min_pct=min_pct,
-        min_expr=min_expr,
-        gene_lookup=gene_lookup,
-        overexpressed_genes=overexpressed_genes,
-        score_method=score_method,
-        complex_aggregate=complex_aggregate,
-        group_weights=None,
-        cofactor_adjust=cofactor_adjust,
-        cofactor_kh=cofactor_kh,
-        cofactor_hill=cofactor_hill,
-        repeats=downsample_repeats,
-    )
-
-
 def _aggregate_downsample_repeats(frame: pd.DataFrame, *, repeats: int, include_pvalue: bool) -> pd.DataFrame:
     key_cols = ["source", "target", "ligand", "receptor", "pathway"]
     group = frame.groupby(key_cols, observed=True, sort=False)
@@ -1152,12 +1017,6 @@ def _group_expression_from_labels(
     clip_quantile: float = 0.99,
     array_backend: str = "cpu",
 ):
-    if array_backend == "cupy" and aggregate in {"mean", "clipped_mean", "gated_mean"}:
-        try:
-            return _group_expression_mean_cupy(x, var_names, labels, groups, aggregate=aggregate, clip_quantile=clip_quantile)
-        except Exception as exc:
-            warnings.warn(f"CuPy group expression failed; falling back to CPU. Reason: {exc}", RuntimeWarning, stacklevel=2)
-
     clip_caps = _positive_quantile_caps(x, clip_quantile) if aggregate in {"clipped_mean", "gated_mean"} else None
     means = pd.DataFrame(index=groups, columns=var_names, dtype=float)
     pcts = pd.DataFrame(index=groups, columns=var_names, dtype=float)
@@ -1194,95 +1053,6 @@ def _group_expression_from_labels(
         means.loc[group] = _aggregate_matrix(arr, aggregate=aggregate, trim=trim, clip_quantile=clip_quantile)
         pcts.loc[group] = pct
     return means, pcts
-
-
-_CUPY_SPARSE_CACHE: dict[tuple[int, str, tuple[int, int], int], tuple[weakref.ReferenceType[object], object]] = {}
-
-
-def _group_expression_mean_cupy(x, var_names: pd.Index, labels: np.ndarray, groups: list[str], *, aggregate: str, clip_quantile: float):
-    cp = _cupy_module()
-    from cupyx.scipy import sparse as cupyx_sparse  # type: ignore[import-not-found]
-
-    labels = np.asarray(labels).astype(str)
-    group_index = {group: i for i, group in enumerate(groups)}
-    codes = np.array([group_index.get(label, -1) for label in labels], dtype=np.int32)
-    keep = codes >= 0
-    codes = codes[keep]
-    n_obs = int(labels.size)
-    n_groups = len(groups)
-    counts = np.bincount(codes, minlength=n_groups).astype(float)
-    counts_safe = np.where(counts > 0, counts, 1.0)
-
-    row = cp.asarray(codes, dtype=cp.int32)
-    col = cp.asarray(np.flatnonzero(keep), dtype=cp.int32)
-    data = cp.ones(codes.size, dtype=cp.float64)
-    group_matrix = cupyx_sparse.csr_matrix((data, (row, col)), shape=(n_groups, n_obs))
-
-    if sparse.issparse(x):
-        _x_gpu, x_positive_gpu, x_for_mean = _gpu_expression_matrices_for_mean(
-            x,
-            aggregate=aggregate,
-            clip_quantile=clip_quantile,
-        )
-        sums = group_matrix @ x_for_mean
-        pct_sums = group_matrix @ x_positive_gpu
-        means_np = cp.asnumpy(sums.toarray()) / counts_safe[:, None]
-        pcts_np = cp.asnumpy(pct_sums.toarray()) / counts_safe[:, None]
-    else:
-        arr = cp.asarray(np.asarray(x, dtype=float))
-        arr_for_mean = arr
-        if aggregate in {"clipped_mean", "gated_mean"}:
-            caps = cp.asarray(_dense_positive_quantile_caps(cp.asnumpy(arr), clip_quantile), dtype=cp.float64)
-            arr_for_mean = cp.minimum(arr, caps[None, :])
-        sums = group_matrix @ arr_for_mean
-        pct_sums = group_matrix @ (arr > 0).astype(cp.float64)
-        means_np = cp.asnumpy(sums) / counts_safe[:, None]
-        pcts_np = cp.asnumpy(pct_sums) / counts_safe[:, None]
-
-    means_np[counts == 0, :] = 0.0
-    pcts_np[counts == 0, :] = 0.0
-    if aggregate == "gated_mean":
-        means_np = _gated_mean_from_all_mean_and_pct(means_np, pcts_np)
-    means = pd.DataFrame(means_np, index=groups, columns=var_names, dtype=float)
-    pcts = pd.DataFrame(pcts_np, index=groups, columns=var_names, dtype=float)
-    return means, pcts
-
-
-def _gpu_expression_matrices_for_mean(x, *, aggregate: str, clip_quantile: float):
-    cp = _cupy_module()
-    if not sparse.issparse(x):
-        raise TypeError("GPU batched sparse reduce currently requires a scipy sparse matrix.")
-    x_csr = x.tocsr().astype(float, copy=False)
-    x_gpu = _cached_cupy_csr_matrix(x_csr)
-    x_positive = x_csr.copy()
-    x_positive.data = (x_positive.data > 0).astype(float, copy=False)
-    x_positive_gpu = _cached_cupy_csr_matrix(x_positive)
-    x_for_mean = x_gpu
-    if aggregate in {"clipped_mean", "gated_mean"}:
-        caps = cp.asarray(_sparse_positive_quantile_caps(x_csr, clip_quantile), dtype=cp.float64)
-        x_for_mean = x_gpu.copy()
-        x_for_mean.data = cp.minimum(x_for_mean.data, caps[x_for_mean.indices])
-    return x_gpu, x_positive_gpu, x_for_mean
-
-
-def _cached_cupy_csr_matrix(x_csr):
-    from cupyx.scipy import sparse as cupyx_sparse  # type: ignore[import-not-found]
-
-    key = (id(x_csr), str(x_csr.dtype), tuple(x_csr.shape), int(x_csr.nnz))
-    entry = _CUPY_SPARSE_CACHE.get(key)
-    if entry is not None:
-        ref, matrix = entry
-        if ref() is x_csr:
-            return matrix
-    matrix = cupyx_sparse.csr_matrix(x_csr)
-    try:
-        ref = weakref.ref(x_csr, lambda _ref, cache_key=key: _CUPY_SPARSE_CACHE.pop(cache_key, None))
-    except TypeError:
-        return matrix
-    if len(_CUPY_SPARSE_CACHE) >= 8:
-        _CUPY_SPARSE_CACHE.clear()
-    _CUPY_SPARSE_CACHE[key] = (ref, matrix)
-    return matrix
 
 
 def _clipped_sparse_mean(x, *, caps: np.ndarray) -> np.ndarray:
@@ -1533,45 +1303,11 @@ def _resolve_complex_aggregate(score_method: str, complex_aggregate: str) -> str
 
 
 def _resolve_array_backend(array_backend: str | None) -> str:
-    requested = str(array_backend or os.environ.get("PYCCC_ARRAY_BACKEND", "cpu")).lower()
+    requested = str(array_backend or "cpu").lower()
     if requested not in VALID_ARRAY_BACKENDS:
         allowed = ", ".join(sorted(VALID_ARRAY_BACKENDS))
         raise ValueError(f"`array_backend` must be one of: {allowed}.")
-    if requested in {"cpu", "numpy"}:
-        return "cpu"
-    if requested == "auto":
-        try:
-            _cupy_module()
-            return "cupy"
-        except Exception:
-            return "cpu"
-    try:
-        _cupy_module()
-        return "cupy"
-    except Exception as exc:
-        warnings.warn(f"CuPy backend requested but unavailable; falling back to CPU. Reason: {exc}", RuntimeWarning, stacklevel=2)
-        return "cpu"
-
-
-@lru_cache(maxsize=1)
-def _cupy_module():
-    import cupy as cp  # type: ignore[import-not-found]
-
-    # Import alone is not enough when CUDA libraries or drivers are mismatched.
-    cp.cuda.runtime.getDeviceCount()
-    return cp
-
-
-def _array_module(array_backend: str):
-    return _cupy_module() if array_backend == "cupy" else np
-
-
-def _as_backend_array(values: np.ndarray, array_backend: str):
-    return _array_module(array_backend).asarray(values) if array_backend == "cupy" else values
-
-
-def _backend_to_numpy(values, array_backend: str) -> np.ndarray:
-    return _cupy_module().asnumpy(values) if array_backend == "cupy" else values
+    return "cpu"
 
 
 def _score_lr_table_vectorized(
@@ -1607,70 +1343,41 @@ def _score_lr_table_vectorized(
         co_inhibition = _cellchat_coreceptor_factor_matrix(lr, expr_mean, groups, gene_lookup, "co_I_receptor_genes")
         rec_expr_for_score = rec_expr_for_score * co_activation / co_inhibition
 
-    try:
-        xp = _array_module(array_backend)
-        lig_expr_b = _as_backend_array(lig_expr, array_backend)
-        rec_expr_score_b = _as_backend_array(rec_expr_for_score, array_backend)
-        lig_pct_b = _as_backend_array(lig_pct, array_backend)
-        rec_pct_b = _as_backend_array(rec_pct, array_backend)
+    valid = (lig_expr[:, :, None] > min_expr) & (lig_pct[:, :, None] >= min_pct) & (rec_expr_for_score[:, None, :] > min_expr) & (rec_pct[:, None, :] >= min_pct)
+    if overexpressed_genes is not None:
+        lig_oe = _complex_overexpressed_matrix(lr["ligand"], groups, overexpressed_genes)
+        rec_oe = _complex_overexpressed_matrix(lr["receptor"], groups, overexpressed_genes)
+        valid &= lig_oe[:, :, None] & rec_oe[:, None, :]
+    lr_signal = lig_expr[:, :, None] * rec_expr_for_score[:, None, :]
+    if score_method == "sqrt":
+        prob = np.sqrt(lr_signal)
+    elif score_method == "cellchat":
+        kh_pow = cofactor_kh**cofactor_hill
+        signal_pow = np.power(lr_signal, cofactor_hill)
+        prob = signal_pow / (kh_pow + signal_pow)
+    else:  # pragma: no cover - validated upstream
+        raise ValueError(f"Unknown score_method: {score_method}")
 
-        valid = (lig_expr_b[:, :, None] > min_expr) & (lig_pct_b[:, :, None] >= min_pct) & (rec_expr_score_b[:, None, :] > min_expr) & (rec_pct_b[:, None, :] >= min_pct)
-        if overexpressed_genes is not None:
-            lig_oe = _as_backend_array(_complex_overexpressed_matrix(lr["ligand"], groups, overexpressed_genes), array_backend)
-            rec_oe = _as_backend_array(_complex_overexpressed_matrix(lr["receptor"], groups, overexpressed_genes), array_backend)
-            valid &= lig_oe[:, :, None] & rec_oe[:, None, :]
-        lr_signal = lig_expr_b[:, :, None] * rec_expr_score_b[:, None, :]
-        if score_method == "sqrt":
-            prob = xp.sqrt(lr_signal)
-        elif score_method == "cellchat":
-            kh_pow = cofactor_kh**cofactor_hill
-            signal_pow = xp.power(lr_signal, cofactor_hill)
-            prob = signal_pow / (kh_pow + signal_pow)
-        else:  # pragma: no cover - validated upstream
-            raise ValueError(f"Unknown score_method: {score_method}")
+    if cofactor_adjust and score_method == "cellchat":
+        agonist = _cellchat_hill_cofactor_factor_matrix(lr, expr_mean, groups, gene_lookup, "agonist_genes", kh=cofactor_kh, hill=cofactor_hill, mode="agonist")
+        antagonist = _cellchat_hill_cofactor_factor_matrix(lr, expr_mean, groups, gene_lookup, "antagonist_genes", kh=cofactor_kh, hill=cofactor_hill, mode="antagonist")
+        prob = prob * agonist[:, :, None] * agonist[:, None, :] * antagonist[:, :, None] * antagonist[:, None, :]
+    elif cofactor_adjust:
+        prob = prob * _cofactor_matrix(lr, expr_mean, groups, gene_lookup, kh=cofactor_kh, hill=cofactor_hill)
+    if group_weights is not None:
+        weights = np.array([group_weights[group] for group in groups], dtype=float)
+        pair_group_weights = weights[None, :, None] * weights[None, None, :]
+        if score_method == "cellchat":
+            prob = prob * pair_group_weights
+        else:
+            prob = prob * np.sqrt(pair_group_weights)
+    if pair_weights is not None:
+        pair = np.array([[pair_weights[(source, target)] for target in groups] for source in groups], dtype=float)
+        prob = prob * pair[None, :, :]
 
-        if cofactor_adjust and score_method == "cellchat":
-            agonist = _as_backend_array(_cellchat_hill_cofactor_factor_matrix(lr, expr_mean, groups, gene_lookup, "agonist_genes", kh=cofactor_kh, hill=cofactor_hill, mode="agonist"), array_backend)
-            antagonist = _as_backend_array(_cellchat_hill_cofactor_factor_matrix(lr, expr_mean, groups, gene_lookup, "antagonist_genes", kh=cofactor_kh, hill=cofactor_hill, mode="antagonist"), array_backend)
-            prob = prob * agonist[:, :, None] * agonist[:, None, :] * antagonist[:, :, None] * antagonist[:, None, :]
-        elif cofactor_adjust:
-            prob = prob * _as_backend_array(_cofactor_matrix(lr, expr_mean, groups, gene_lookup, kh=cofactor_kh, hill=cofactor_hill), array_backend)
-        if group_weights is not None:
-            weights = _as_backend_array(np.array([group_weights[group] for group in groups], dtype=float), array_backend)
-            pair_group_weights = weights[None, :, None] * weights[None, None, :]
-            if score_method == "cellchat":
-                prob = prob * pair_group_weights
-            else:
-                prob = prob * xp.sqrt(pair_group_weights)
-        if pair_weights is not None:
-            pair = _as_backend_array(np.array([[pair_weights[(source, target)] for target in groups] for source in groups], dtype=float), array_backend)
-            prob = prob * pair[None, :, :]
-
-        valid &= xp.isfinite(prob) & (prob > 0)
-        lr_idx, source_idx, target_idx = (_backend_to_numpy(idx, array_backend) for idx in xp.nonzero(valid))
-        prob_np = _backend_to_numpy(prob, array_backend)
-    except Exception as exc:
-        if array_backend == "cupy":
-            warnings.warn(f"CuPy scoring failed; retrying this score on CPU. Reason: {exc}", RuntimeWarning, stacklevel=2)
-            return _score_lr_table_vectorized(
-                lr,
-                expr_mean,
-                expr_pct,
-                groups,
-                min_pct=min_pct,
-                min_expr=min_expr,
-                gene_lookup=gene_lookup,
-                overexpressed_genes=overexpressed_genes,
-                score_method=score_method,
-                complex_aggregate=complex_aggregate,
-                group_weights=group_weights,
-                pair_weights=pair_weights,
-                cofactor_adjust=cofactor_adjust,
-                cofactor_kh=cofactor_kh,
-                cofactor_hill=cofactor_hill,
-                array_backend="cpu",
-            )
-        raise
+    valid &= np.isfinite(prob) & (prob > 0)
+    lr_idx, source_idx, target_idx = np.nonzero(valid)
+    prob_np = prob
     if lr_idx.size == 0:
         return _empty_interactions()
 
@@ -1692,221 +1399,6 @@ def _score_lr_table_vectorized(
     )
     for col in _lr_metadata_columns(lr):
         out[col] = lr[col].to_numpy(dtype=object)[lr_idx]
-    return out
-
-
-def _score_lr_batch_tensors_gpu(
-    lr: pd.DataFrame,
-    means_gpu,
-    pcts_gpu,
-    groups: list[str],
-    *,
-    var_names: pd.Index,
-    min_pct: float,
-    min_expr: float,
-    gene_lookup: dict[str, str],
-    overexpressed_genes: dict[str, set[str]] | None,
-    score_method: str,
-    complex_aggregate: str,
-    group_weights: dict[str, float] | None,
-    cofactor_adjust: bool,
-    cofactor_kh: float,
-    cofactor_hill: float,
-):
-    if overexpressed_genes is not None:
-        raise NotImplementedError("GPU batched scorer does not yet support DE-gated interactions.")
-    if cofactor_adjust:
-        raise NotImplementedError("GPU batched scorer does not yet support cofactor adjustment.")
-
-    cp = _cupy_module()
-    lig_expr = _complex_batch_matrix_gpu(means_gpu, lr["ligand"], gene_lookup, var_names, aggregate=complex_aggregate)
-    rec_expr = _complex_batch_matrix_gpu(means_gpu, lr["receptor"], gene_lookup, var_names, aggregate=complex_aggregate)
-    lig_pct = _complex_batch_matrix_gpu(pcts_gpu, lr["ligand"], gene_lookup, var_names, aggregate="min")
-    rec_pct = _complex_batch_matrix_gpu(pcts_gpu, lr["receptor"], gene_lookup, var_names, aggregate="min")
-
-    valid = (
-        (lig_expr[:, :, :, None] > min_expr)
-        & (lig_pct[:, :, :, None] >= min_pct)
-        & (rec_expr[:, :, None, :] > min_expr)
-        & (rec_pct[:, :, None, :] >= min_pct)
-    )
-    lr_signal = lig_expr[:, :, :, None] * rec_expr[:, :, None, :]
-    if score_method == "sqrt":
-        prob = cp.sqrt(lr_signal)
-    elif score_method == "cellchat":
-        kh_pow = cofactor_kh**cofactor_hill
-        signal_pow = cp.power(lr_signal, cofactor_hill)
-        prob = signal_pow / (kh_pow + signal_pow)
-    else:  # pragma: no cover - validated upstream
-        raise ValueError(f"Unknown score_method: {score_method}")
-
-    if group_weights is not None:
-        weights = cp.asarray(np.array([group_weights[group] for group in groups], dtype=float), dtype=cp.float64)
-        pair_group_weights = weights[None, None, :, None] * weights[None, None, None, :]
-        prob = prob * pair_group_weights if score_method == "cellchat" else prob * cp.sqrt(pair_group_weights)
-
-    valid &= cp.isfinite(prob) & (prob > 0)
-    return prob, valid, lig_expr, rec_expr, lig_pct, rec_pct
-
-
-def _score_lr_batch_frames_gpu(
-    lr: pd.DataFrame,
-    means_gpu,
-    pcts_gpu,
-    groups: list[str],
-    *,
-    var_names: pd.Index,
-    min_pct: float,
-    min_expr: float,
-    gene_lookup: dict[str, str],
-    overexpressed_genes: dict[str, set[str]] | None,
-    score_method: str,
-    complex_aggregate: str,
-    group_weights: dict[str, float] | None,
-    cofactor_adjust: bool,
-    cofactor_kh: float,
-    cofactor_hill: float,
-) -> list[pd.DataFrame]:
-    cp = _cupy_module()
-    batch_count = int(means_gpu.shape[0])
-    prob, valid, lig_expr, rec_expr, lig_pct, rec_pct = _score_lr_batch_tensors_gpu(
-        lr,
-        means_gpu,
-        pcts_gpu,
-        groups,
-        var_names=var_names,
-        min_pct=min_pct,
-        min_expr=min_expr,
-        gene_lookup=gene_lookup,
-        overexpressed_genes=overexpressed_genes,
-        score_method=score_method,
-        complex_aggregate=complex_aggregate,
-        group_weights=group_weights,
-        cofactor_adjust=cofactor_adjust,
-        cofactor_kh=cofactor_kh,
-        cofactor_hill=cofactor_hill,
-    )
-    batch_idx, lr_idx, source_idx, target_idx = cp.nonzero(valid)
-    if int(batch_idx.size) == 0:
-        return [_empty_interactions() for _ in range(batch_count)]
-
-    batch_np = cp.asnumpy(batch_idx)
-    lr_np = cp.asnumpy(lr_idx)
-    source_np = cp.asnumpy(source_idx)
-    target_np = cp.asnumpy(target_idx)
-    group_arr = np.asarray(groups, dtype=object)
-    out = pd.DataFrame(
-        {
-            "_batch": batch_np,
-            "source": group_arr[source_np],
-            "target": group_arr[target_np],
-            "ligand": lr["ligand"].to_numpy(dtype=object)[lr_np],
-            "receptor": lr["receptor"].to_numpy(dtype=object)[lr_np],
-            "pathway": lr["pathway"].to_numpy(dtype=object)[lr_np],
-            "annotation": lr["annotation"].to_numpy(dtype=object)[lr_np] if "annotation" in lr.columns else "",
-            "ligand_expr": cp.asnumpy(lig_expr[batch_idx, lr_idx, source_idx]),
-            "receptor_expr": cp.asnumpy(rec_expr[batch_idx, lr_idx, target_idx]),
-            "ligand_pct": cp.asnumpy(lig_pct[batch_idx, lr_idx, source_idx]),
-            "receptor_pct": cp.asnumpy(rec_pct[batch_idx, lr_idx, target_idx]),
-            "prob": cp.asnumpy(prob[batch_idx, lr_idx, source_idx, target_idx]),
-        }
-    )
-    for col in _lr_metadata_columns(lr):
-        out[col] = lr[col].to_numpy(dtype=object)[lr_np]
-    return [out[out["_batch"] == batch].drop(columns="_batch").reset_index(drop=True) for batch in range(batch_count)]
-
-
-def _score_lr_batch_summary_frame_gpu(
-    lr: pd.DataFrame,
-    means_gpu,
-    pcts_gpu,
-    groups: list[str],
-    *,
-    var_names: pd.Index,
-    min_pct: float,
-    min_expr: float,
-    gene_lookup: dict[str, str],
-    overexpressed_genes: dict[str, set[str]] | None,
-    score_method: str,
-    complex_aggregate: str,
-    group_weights: dict[str, float] | None,
-    cofactor_adjust: bool,
-    cofactor_kh: float,
-    cofactor_hill: float,
-    repeats: int,
-) -> pd.DataFrame:
-    cp = _cupy_module()
-    prob, valid, lig_expr, rec_expr, lig_pct, rec_pct = _score_lr_batch_tensors_gpu(
-        lr,
-        means_gpu,
-        pcts_gpu,
-        groups,
-        var_names=var_names,
-        min_pct=min_pct,
-        min_expr=min_expr,
-        gene_lookup=gene_lookup,
-        overexpressed_genes=overexpressed_genes,
-        score_method=score_method,
-        complex_aggregate=complex_aggregate,
-        group_weights=group_weights,
-        cofactor_adjust=cofactor_adjust,
-        cofactor_kh=cofactor_kh,
-        cofactor_hill=cofactor_hill,
-    )
-    present = valid.sum(axis=0)
-    keep = present > 0
-    lr_idx, source_idx, target_idx = cp.nonzero(keep)
-    if int(lr_idx.size) == 0:
-        out = _empty_interactions()
-        out["prob_std"] = pd.Series(dtype=float)
-        out["stability"] = pd.Series(dtype=float)
-        out["sketch_repeats"] = pd.Series(dtype=int)
-        out["sketch_present"] = pd.Series(dtype=int)
-        return out
-
-    valid_float = valid.astype(cp.float64)
-    prob_present = cp.where(valid, prob, 0.0)
-    prob_sum = prob_present.sum(axis=0)
-    prob_mean = prob_sum / repeats
-    prob_sq_sum = cp.square(prob_present).sum(axis=0)
-    if repeats > 1:
-        variance = (prob_sq_sum - repeats * cp.square(prob_mean)) / (repeats - 1)
-        prob_std = cp.sqrt(cp.maximum(variance, 0.0))
-    else:
-        prob_std = cp.zeros_like(prob_mean)
-
-    present_safe = cp.maximum(present.astype(cp.float64), 1.0)
-    lig_expr_mean = (lig_expr[:, :, :, None] * valid_float).sum(axis=0) / present_safe
-    rec_expr_mean = (rec_expr[:, :, None, :] * valid_float).sum(axis=0) / present_safe
-    lig_pct_mean = (lig_pct[:, :, :, None] * valid_float).sum(axis=0) / present_safe
-    rec_pct_mean = (rec_pct[:, :, None, :] * valid_float).sum(axis=0) / present_safe
-
-    lr_np = cp.asnumpy(lr_idx)
-    source_np = cp.asnumpy(source_idx)
-    target_np = cp.asnumpy(target_idx)
-    group_arr = np.asarray(groups, dtype=object)
-    out = pd.DataFrame(
-        {
-            "source": group_arr[source_np],
-            "target": group_arr[target_np],
-            "ligand": lr["ligand"].to_numpy(dtype=object)[lr_np],
-            "receptor": lr["receptor"].to_numpy(dtype=object)[lr_np],
-            "pathway": lr["pathway"].to_numpy(dtype=object)[lr_np],
-            "annotation": lr["annotation"].to_numpy(dtype=object)[lr_np] if "annotation" in lr.columns else "",
-            "ligand_expr": cp.asnumpy(lig_expr_mean[lr_idx, source_idx, target_idx]),
-            "receptor_expr": cp.asnumpy(rec_expr_mean[lr_idx, source_idx, target_idx]),
-            "ligand_pct": cp.asnumpy(lig_pct_mean[lr_idx, source_idx, target_idx]),
-            "receptor_pct": cp.asnumpy(rec_pct_mean[lr_idx, source_idx, target_idx]),
-            "prob": cp.asnumpy(prob_mean[lr_idx, source_idx, target_idx]),
-            "prob_std": cp.asnumpy(prob_std[lr_idx, source_idx, target_idx]),
-            "stability": cp.asnumpy(present[lr_idx, source_idx, target_idx]) / repeats,
-            "sketch_repeats": repeats,
-            "sketch_present": cp.asnumpy(present[lr_idx, source_idx, target_idx]).astype(int),
-            "pvalue": np.nan,
-        }
-    )
-    for col in _lr_metadata_columns(lr):
-        out[col] = lr[col].to_numpy(dtype=object)[lr_np]
     return out
 
 
@@ -2079,48 +1571,6 @@ def _complex_batch_matrix_numpy(values_np: np.ndarray, complexes: pd.Series, gen
         else:  # pragma: no cover - validated upstream
             raise ValueError(f"Unknown complex aggregate: {aggregate}")
     return np.stack([cache[str(name)] for name in complexes.astype(str)], axis=1)
-
-
-def _complex_batch_matrix_gpu(values_gpu, complexes: pd.Series, gene_lookup: dict[str, str], var_names: pd.Index, *, aggregate: str):
-    cp = _cupy_module()
-    var_index = {str(gene): idx for idx, gene in enumerate(var_names.astype(str))}
-    unique_complexes = pd.Index(complexes.astype(str).unique())
-    cache = {}
-    for complex_name in unique_complexes:
-        positions = [var_index[gene_lookup[gene.upper()]] for gene in _complex_genes(str(complex_name))]
-        idx = cp.asarray(positions, dtype=cp.int32)
-        arr = values_gpu[:, :, idx]
-        if len(positions) == 1:
-            cache[str(complex_name)] = arr[:, :, 0]
-        elif aggregate == "min":
-            cache[str(complex_name)] = arr.min(axis=2)
-        elif aggregate == "geometric_mean":
-            positive = arr > 0
-            keep = positive.all(axis=2)
-            safe = cp.where(positive, arr, 1.0)
-            cache[str(complex_name)] = cp.where(keep, cp.exp(cp.log(safe).mean(axis=2)), 0.0)
-        else:  # pragma: no cover - validated upstream
-            raise ValueError(f"Unknown complex aggregate: {aggregate}")
-    return cp.stack([cache[str(name)] for name in complexes.astype(str)], axis=1)
-
-
-def _observed_score_indices(lr: pd.DataFrame, groups: list[str], obs_keys: pd.MultiIndex) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    lr_index = {}
-    for idx, row in enumerate(lr.itertuples(index=False)):
-        key = (str(row.ligand), str(row.receptor), str(row.pathway))
-        if key in lr_index:
-            raise NotImplementedError("GPU batched p-values require unique ligand/receptor/pathway rows.")
-        lr_index[key] = idx
-    group_index = {group: idx for idx, group in enumerate(groups)}
-    obs_frame = obs_keys.to_frame(index=False)
-    lr_idx = []
-    source_idx = []
-    target_idx = []
-    for row in obs_frame.itertuples(index=False):
-        lr_idx.append(lr_index[(str(row.ligand), str(row.receptor), str(row.pathway))])
-        source_idx.append(group_index[str(row.source)])
-        target_idx.append(group_index[str(row.target)])
-    return np.asarray(lr_idx, dtype=np.int32), np.asarray(source_idx, dtype=np.int32), np.asarray(target_idx, dtype=np.int32)
 
 
 def _complex_matrix(values: pd.DataFrame, complexes: pd.Series, gene_lookup: dict[str, str], *, aggregate: str) -> np.ndarray:
@@ -2320,36 +1770,6 @@ def _permutation_pvalues(
     static_group_weights = _group_weights_from_labels(original, groups) if population_size else None
     seeds = rng.integers(0, np.iinfo(np.int32).max, size=n_permutations, dtype=np.int64)
 
-    if array_backend == "cupy" and aggregate in {"mean", "clipped_mean", "gated_mean"} and coords is None:
-        try:
-            exceed = _permutation_exceed_chunk_gpu_batched(
-                seeds,
-                x=x,
-                var_names=var_names,
-                original=original,
-                groups=groups,
-                lr=lr,
-                obs_keys=obs_keys,
-                obs_scores=obs_scores,
-                aggregate=aggregate,
-                trim=trim,
-                clip_quantile=clip_quantile,
-                min_pct=min_pct,
-                min_expr=min_expr,
-                gene_lookup=gene_lookup,
-                overexpressed_genes=overexpressed_genes,
-                group_weights=static_group_weights,
-                cofactor_adjust=cofactor_adjust,
-                cofactor_kh=cofactor_kh,
-                cofactor_hill=cofactor_hill,
-                score_method=score_method,
-                complex_aggregate=complex_aggregate,
-                batch_size=8,
-            )
-            return (exceed + 1) / (n_permutations + 1)
-        except Exception as exc:
-            warnings.warn(f"CuPy batched permutation failed; falling back to CPU-style permutation loop. Reason: {exc}", RuntimeWarning, stacklevel=2)
-
     worker_count = _resolve_n_jobs(n_jobs)
     if worker_count == 1 or n_permutations == 1:
         exceed = _permutation_exceed_chunk(
@@ -2490,92 +1910,4 @@ def _permutation_exceed_chunk(
         perm_scores = perm.set_index(key_cols)["prob"]
         aligned = perm_scores.reindex(obs_keys, fill_value=0.0).to_numpy()
         exceed += aligned >= obs_scores
-    return exceed
-
-
-def _permutation_exceed_chunk_gpu_batched(
-    seeds: np.ndarray,
-    *,
-    x,
-    var_names: pd.Index,
-    original: np.ndarray,
-    groups: list[str],
-    lr: pd.DataFrame,
-    obs_keys: pd.MultiIndex,
-    obs_scores: np.ndarray,
-    aggregate: str,
-    trim: float,
-    clip_quantile: float,
-    min_pct: float,
-    min_expr: float,
-    gene_lookup: dict[str, str],
-    overexpressed_genes: dict[str, set[str]] | None,
-    group_weights: dict[str, float] | None,
-    cofactor_adjust: bool,
-    cofactor_kh: float,
-    cofactor_hill: float,
-    score_method: str,
-    complex_aggregate: str,
-    batch_size: int,
-) -> np.ndarray:
-    cp = _cupy_module()
-    from cupyx.scipy import sparse as cupyx_sparse  # type: ignore[import-not-found]
-
-    labels = np.asarray(original).astype(str)
-    group_index = {group: i for i, group in enumerate(groups)}
-    n_obs = int(labels.size)
-    n_groups = len(groups)
-    x_gpu, x_positive_gpu, x_for_mean_gpu = _gpu_expression_matrices_for_mean(x, aggregate=aggregate, clip_quantile=clip_quantile)
-    del x_gpu
-    obs_lr_idx, obs_source_idx, obs_target_idx = _observed_score_indices(lr, groups, obs_keys)
-    obs_lr_gpu = cp.asarray(obs_lr_idx, dtype=cp.int32)
-    obs_source_gpu = cp.asarray(obs_source_idx, dtype=cp.int32)
-    obs_target_gpu = cp.asarray(obs_target_idx, dtype=cp.int32)
-    obs_scores_gpu = cp.asarray(obs_scores, dtype=cp.float64)
-    exceed = np.zeros(len(obs_scores), dtype=int)
-    col = cp.tile(cp.arange(n_obs, dtype=cp.int32), batch_size)
-
-    for offset in range(0, len(seeds), batch_size):
-        chunk = seeds[offset : offset + batch_size]
-        batch = len(chunk)
-        code_rows = []
-        for seed in chunk:
-            shuffled = np.random.default_rng(int(seed)).permutation(labels)
-            code_rows.append(np.array([group_index[label] for label in shuffled], dtype=np.int32))
-        codes = np.vstack(code_rows)
-        row_np = (np.arange(batch, dtype=np.int32)[:, None] * n_groups + codes).ravel()
-        counts = np.bincount(row_np, minlength=batch * n_groups).reshape(batch, n_groups).astype(float)
-        counts_safe = np.where(counts > 0, counts, 1.0)
-        row = cp.asarray(row_np, dtype=cp.int32)
-        group_matrix = cupyx_sparse.csr_matrix((cp.ones(batch * n_obs, dtype=cp.float64), (row, col[: batch * n_obs])), shape=(batch * n_groups, n_obs))
-        counts_gpu = cp.asarray(counts, dtype=cp.float64)
-        counts_safe_gpu = cp.asarray(counts_safe, dtype=cp.float64)
-        means_gpu = (group_matrix @ x_for_mean_gpu).toarray().reshape(batch, n_groups, len(var_names))
-        pcts_gpu = (group_matrix @ x_positive_gpu).toarray().reshape(batch, n_groups, len(var_names))
-        means_gpu = cp.where(counts_gpu[:, :, None] > 0, means_gpu / counts_safe_gpu[:, :, None], 0.0)
-        pcts_gpu = cp.where(counts_gpu[:, :, None] > 0, pcts_gpu / counts_safe_gpu[:, :, None], 0.0)
-        if aggregate == "gated_mean":
-            means_gpu = cp.asarray(_gated_mean_from_all_mean_and_pct(cp.asnumpy(means_gpu), cp.asnumpy(pcts_gpu)), dtype=cp.float64)
-        prob, valid, _lig_expr, _rec_expr, _lig_pct, _rec_pct = _score_lr_batch_tensors_gpu(
-            lr,
-            means_gpu,
-            pcts_gpu,
-            groups,
-            var_names=var_names,
-            min_pct=min_pct,
-            min_expr=min_expr,
-            gene_lookup=gene_lookup,
-            overexpressed_genes=overexpressed_genes,
-            score_method=score_method,
-            complex_aggregate=complex_aggregate,
-            group_weights=group_weights,
-            cofactor_adjust=cofactor_adjust,
-            cofactor_kh=cofactor_kh,
-            cofactor_hill=cofactor_hill,
-        )
-        batch_axis = cp.arange(batch, dtype=cp.int32)[:, None]
-        obs_prob = prob[batch_axis, obs_lr_gpu[None, :], obs_source_gpu[None, :], obs_target_gpu[None, :]]
-        obs_valid = valid[batch_axis, obs_lr_gpu[None, :], obs_source_gpu[None, :], obs_target_gpu[None, :]]
-        obs_prob = cp.where(obs_valid, obs_prob, 0.0)
-        exceed += cp.asnumpy((obs_prob >= obs_scores_gpu[None, :]).sum(axis=0)).astype(int)
     return exceed

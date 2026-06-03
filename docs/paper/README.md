@@ -1,5 +1,11 @@
 # Paper Artifacts
 
+```{toctree}
+:hidden:
+
+main_figure/pyccc_main_figure_legend
+```
+
 This folder contains compact, committed artifacts that support the repository's
 publication-style claims without requiring large local benchmark directories.
 

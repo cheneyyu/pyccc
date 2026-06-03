@@ -12,6 +12,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+docs/_build/
 data/
 cellchat_plot_comparison/
 cellchat_reference_comparison/
@@ -22,3 +23,4 @@ cellchat_reference_comparison/
 !docs/**/*.png
 !docs/**/*.svg
 !docs/**/*.pdf
+!docs/**/*.html
