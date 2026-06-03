@@ -40,8 +40,8 @@ def make_lr_pair_features(
     euclidean = np.linalg.norm(ligand_z - receptor_z, axis=1)[:, None]
     ligand_length = _length_feature(pair_frame, embeddings, pair_frame["ligand_gene"], prefix="ligand")[:, None]
     receptor_length = _length_feature(pair_frame, embeddings, pair_frame["receptor_gene"], prefix="receptor")[:, None]
-    ligand_role = pair_frame.get("ligand_role_score", pd.Series([0.0] * len(pair_frame))).astype(float).to_numpy()[:, None]
-    receptor_role = pair_frame.get("receptor_role_score", pd.Series([0.0] * len(pair_frame))).astype(float).to_numpy()[:, None]
+    ligand_role = pd.to_numeric(pair_frame.get("ligand_role_score", pd.Series([0.0] * len(pair_frame))), errors="coerce").fillna(0.0).to_numpy()[:, None]
+    receptor_role = pd.to_numeric(pair_frame.get("receptor_role_score", pd.Series([0.0] * len(pair_frame))), errors="coerce").fillna(0.0).to_numpy()[:, None]
     blocks = [
         ligand_z,
         receptor_z,

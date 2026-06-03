@@ -8,7 +8,7 @@ from .diff import DifferentialCCC, compare_communication, compare_samples, pairw
 from .embeddings import embed_proteins_esmc
 from .expression import signaling_expression_frame, signaling_expression_values
 from .liana_bridge import from_liana_results, run_liana
-from .lr_prediction import generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
+from .lr_prediction import evaluate_lr_model_quality_gates, generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
 from .lr_resources import load_training_lr_resources, training_lr_to_cellchatdb
 from .patterns import CommunicationPatterns, communication_pattern_matrix, compute_communication_patterns, compute_pathway_clusters, compute_pathway_embedding, compute_pathway_similarity, select_communication_pattern_number
 from .pair_features import LRPairFeatures, make_lr_pair_features
@@ -44,6 +44,7 @@ __all__ = [
     "from_liana_results",
     "embed_proteins_esmc",
     "estimate_lr_density_prior",
+    "evaluate_lr_model_quality_gates",
     "generate_lr_candidates_dbfree",
     "identify_overexpressed_genes",
     "identify_overexpressed_interactions",

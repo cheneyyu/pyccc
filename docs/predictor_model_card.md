@@ -45,3 +45,9 @@ Generated cards also record:
 - `validation_feature_encoder_fit = train_split_only`,
 - calibration method and calibration metrics,
 - Brier score and 10-bin expected calibration error when calibration is usable.
+- baseline PR-AUC comparisons for degree prior, embedding cosine, role-only,
+  and random scores.
+
+Use `pc.evaluate_lr_model_quality_gates(...)` to turn the model card into a
+check table. It reports model PR-AUC, baseline PR-AUC, optional top-K precision
+deltas, pass/fail, and the reason for every requested split/baseline pair.

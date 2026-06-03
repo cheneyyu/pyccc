@@ -16,6 +16,8 @@ def _fixture_training():
             "resource": ["fixture_a", "fixture_a", "fixture_b", "fixture_b"],
             "ligand_family": ["lfam1", "lfam2", "lfam3", "lfam4"],
             "receptor_family": ["rfam1", "rfam2", "rfam3", "rfam4"],
+            "ligand_role_score": [0.9, 0.8, 0.7, 0.6],
+            "receptor_role_score": [0.9, 0.8, 0.7, 0.6],
             "evidence_type": ["curated_direct"] * 4,
             "is_positive_label": [True] * 4,
         }
@@ -68,6 +70,24 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_resource_out"]["status"] == "ok"
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
+    assert "degree_prior" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert "embedding_cosine" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_pr_auc"]
+    assert "top_100" in card["validation_report"]["leave_species_out"]["summary"]["mean_top_k_precision"]
+    assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]
+    gates = pc.evaluate_lr_model_quality_gates(card, required_splits=["leave_species_out"], min_pr_auc_delta=-1.0)
+    assert gates.attrs["passed"]
+    assert {"degree_prior", "embedding_cosine", "role_only", "random"}.issubset(set(gates["baseline"]))
+    top_k_gates = pc.evaluate_lr_model_quality_gates(
+        card,
+        required_splits=["leave_species_out"],
+        min_pr_auc_delta=-1.0,
+        top_k="top_100",
+        min_top_k_delta=-1.0,
+    )
+    assert top_k_gates.attrs["passed"]
+    assert "delta_top_k_precision" in top_k_gates.columns
+    strict_gates = pc.evaluate_lr_model_quality_gates(tmp_path, required_splits=["leave_species_out"], min_pr_auc_delta=2.0)
+    assert not strict_gates.attrs["passed"]
     assert {"model_score", "calibrated_probability"}.issubset(scores.columns)
     assert scores.loc[0, "model_score"] >= 0.0
 

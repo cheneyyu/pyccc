@@ -24,15 +24,8 @@ The current large benchmark uses the CELLxGENE Human Immune Health Atlas:
   negative values
 
 The benchmark runs the same within-sample CCC, two-condition differential CCC,
-and matched visualization workflow through three strategies:
-
-| Strategy | Total time | Speedup vs direct CellChat |
-| --- | ---: | ---: |
-| pyccc native plots | 47.0 s | 4.28x |
-| pyccc compute + CellChat R plots | 63.7 s | 3.16x |
-| direct CellChat R | 201.1 s | 1.00x |
-
-The committed result table is
+and matched visualization workflow through the three strategies shown in the
+README runtime figure. The committed detailed result table is
 `data/runtime_benchmark/human_immune_health_atlas_real1m_raw/adaptive_runtime.tsv`.
 
 ## Reproduce

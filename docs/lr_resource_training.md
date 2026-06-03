@@ -62,8 +62,24 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - PR-AUC, ROC-AUC, and top-K precision at K = 100, 500, 1000, and 5000.
 - held-out probability calibration using isotonic regression by default,
 - a final deployment model refit on all training pairs after validation.
+- baseline comparisons against degree prior, embedding cosine, role-only, and
+  random scores.
 
 Folds that cannot contain both positive and pseudo-negative labels are reported
 as skipped instead of silently inflating the validation result. The PCA feature
 encoder is fit inside each training fold for validation, then refit on all
 pairs only for the final serialized model.
+
+After training, inspect quality gates programmatically:
+
+```python
+gates = pc.evaluate_lr_model_quality_gates(
+    "models/universal_esmc300m_lgbm_v0/model_card.json",
+    required_splits=["leave_species_out", "leave_resource_out"],
+    min_pr_auc_delta=0.0,
+    top_k="top_100",
+    min_top_k_delta=0.0,
+)
+print(gates)
+print(gates.attrs["passed"])
+```

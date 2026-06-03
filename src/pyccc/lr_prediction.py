@@ -111,6 +111,11 @@ def train_lr_link_predictor(
     metrics = {
         "pr_auc": float(random_metrics["pr_auc"]),
         "roc_auc": float(random_metrics["roc_auc"]),
+        "top_k_precision": random_metrics.get("top_k_precision", {}),
+        "baseline_pr_auc": random_metrics.get("baseline_pr_auc", {}),
+        "baseline_top_k_precision": random_metrics.get("baseline_top_k_precision", {}),
+        "baseline_delta_pr_auc": random_metrics.get("baseline_delta_pr_auc", {}),
+        "baseline_delta_top_k_precision": random_metrics.get("baseline_delta_top_k_precision", {}),
         "n_pairs": int(len(y)),
         "n_positive": int(y.sum()),
         "negative_strategy": negative_strategy,
@@ -157,6 +162,101 @@ def train_lr_link_predictor(
     (output / "model_card.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
     (output / "model_card.md").write_text(_model_card_markdown(card), encoding="utf-8")
     return card
+
+
+def evaluate_lr_model_quality_gates(
+    model_card: dict[str, object] | str | Path,
+    *,
+    required_splits: Sequence[str] = ("leave_species_out",),
+    required_baselines: Sequence[str] = ("degree_prior", "embedding_cosine", "role_only", "random"),
+    min_pr_auc_delta: float = 0.0,
+    top_k: str | None = None,
+    min_top_k_delta: float | None = None,
+) -> pd.DataFrame:
+    """Evaluate whether a model card clears baseline comparison gates."""
+
+    card = _load_model_card(model_card)
+    rows = []
+    report = card.get("validation_report", {})
+    if min_top_k_delta is not None and top_k is None:
+        top_k = "top_100"
+    for split in required_splits:
+        item = report.get(split)
+        if not isinstance(item, dict):
+            rows.append(_gate_row(split, "", np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, False, "missing split"))
+            continue
+        if item.get("status") != "ok":
+            rows.append(
+                _gate_row(
+                    split,
+                    "",
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                    False,
+                    str(item.get("reason", "split not usable")),
+                )
+            )
+            continue
+        metric = _split_metric_item(item)
+        model_pr = metric.get("mean_pr_auc", metric.get("pr_auc", np.nan))
+        baselines = metric.get("mean_baseline_pr_auc", metric.get("baseline_pr_auc", {}))
+        model_top_k = _metric_top_k(metric, top_k) if top_k else np.nan
+        baseline_top_k = metric.get("mean_baseline_top_k_precision", metric.get("baseline_top_k_precision", {}))
+        for baseline in required_baselines:
+            if baseline not in baselines:
+                rows.append(
+                    _gate_row(
+                        split,
+                        baseline,
+                        model_pr,
+                        np.nan,
+                        np.nan,
+                        model_top_k,
+                        np.nan,
+                        np.nan,
+                        False,
+                        "missing baseline",
+                    )
+                )
+                continue
+            base_pr = float(baselines[baseline])
+            delta = float(model_pr) - base_pr
+            base_top_k = _baseline_top_k(baseline_top_k, baseline, top_k) if top_k else np.nan
+            top_delta = float(model_top_k) - float(base_top_k) if top_k and pd.notna(model_top_k) and pd.notna(base_top_k) else np.nan
+            pr_pass = bool(pd.notna(delta) and delta >= min_pr_auc_delta)
+            top_pass = True
+            reasons = []
+            if not pr_pass:
+                reasons.append("PR-AUC below threshold")
+            if min_top_k_delta is not None:
+                top_pass = bool(pd.notna(top_delta) and top_delta >= min_top_k_delta)
+                if not top_pass:
+                    reasons.append(f"{top_k} precision below threshold" if top_k else "top-K precision missing")
+            passed = pr_pass and top_pass
+            rows.append(
+                _gate_row(
+                    split,
+                    baseline,
+                    model_pr,
+                    base_pr,
+                    delta,
+                    model_top_k,
+                    base_top_k,
+                    top_delta,
+                    passed,
+                    "ok" if passed else "; ".join(reasons),
+                )
+            )
+    out = pd.DataFrame(rows)
+    out.attrs["passed"] = bool(out["passed"].all()) if not out.empty else False
+    out.attrs["min_pr_auc_delta"] = float(min_pr_auc_delta)
+    out.attrs["top_k"] = top_k
+    out.attrs["min_top_k_delta"] = min_top_k_delta
+    return out
 
 
 def score_lr_candidates(
@@ -257,6 +357,65 @@ def _candidate_list(value: str | Path | Sequence[str]) -> set[str]:
     return {str(item) for item in value}
 
 
+def _load_model_card(model_card: dict[str, object] | str | Path) -> dict[str, object]:
+    if isinstance(model_card, dict):
+        return model_card
+    path = Path(model_card)
+    if path.is_dir():
+        path = path / "model_card.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _split_metric_item(item: dict[str, object]) -> dict[str, object]:
+    if "summary" in item and isinstance(item["summary"], dict):
+        return item["summary"]
+    return item
+
+
+def _metric_top_k(metric: dict[str, object], top_k: str | None) -> float:
+    if top_k is None:
+        return np.nan
+    values = metric.get("mean_top_k_precision", metric.get("top_k_precision", {}))
+    if not isinstance(values, dict) or top_k not in values:
+        return np.nan
+    return float(values[top_k])
+
+
+def _baseline_top_k(values: object, baseline: str, top_k: str | None) -> float:
+    if top_k is None or not isinstance(values, dict):
+        return np.nan
+    item = values.get(baseline, {})
+    if not isinstance(item, dict) or top_k not in item:
+        return np.nan
+    return float(item[top_k])
+
+
+def _gate_row(
+    split: str,
+    baseline: str,
+    model_pr_auc,
+    baseline_pr_auc,
+    delta_pr_auc,
+    model_top_k_precision,
+    baseline_top_k_precision,
+    delta_top_k_precision,
+    passed: bool,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "split": split,
+        "baseline": baseline,
+        "model_pr_auc": float(model_pr_auc) if pd.notna(model_pr_auc) else np.nan,
+        "baseline_pr_auc": float(baseline_pr_auc) if pd.notna(baseline_pr_auc) else np.nan,
+        "delta_pr_auc": float(delta_pr_auc) if pd.notna(delta_pr_auc) else np.nan,
+        "model_top_k_precision": float(model_top_k_precision) if pd.notna(model_top_k_precision) else np.nan,
+        "baseline_top_k_precision": float(baseline_top_k_precision) if pd.notna(baseline_top_k_precision) else np.nan,
+        "delta_top_k_precision": float(delta_top_k_precision) if pd.notna(delta_top_k_precision) else np.nan,
+        "passed": bool(passed),
+        "reason": reason,
+    }
+
+
 def _training_pairs(interactions: pd.DataFrame, *, negative_ratio: int, random_state: int) -> pd.DataFrame:
     if "is_positive_label" in interactions.columns:
         positives = interactions[interactions["is_positive_label"].astype(bool)].copy()
@@ -293,6 +452,8 @@ def _training_pairs(interactions: pd.DataFrame, *, negative_ratio: int, random_s
                     "receptor_gene": rec,
                     "ligand_family": _family_for_gene(species_sub, "ligand", lig),
                     "receptor_family": _family_for_gene(species_sub, "receptor", rec),
+                    "ligand_role_score": _role_score_for_gene(species_sub, "ligand", lig),
+                    "receptor_role_score": _role_score_for_gene(species_sub, "receptor", rec),
                     "label": 0,
                     "negative_strategy": "pu_degree_matched",
                     "negative_seed": int(random_state),
@@ -310,6 +471,9 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
             out[col] = default
     if "clade" not in out.columns:
         out["clade"] = ""
+    for col in ("ligand_role_score", "receptor_role_score"):
+        if col not in out.columns:
+            out[col] = ""
     family_aliases = {
         "ligand_family": ("ligand_family", "ligand_protein_family", "ligand_homology_cluster", "homology_cluster"),
         "receptor_family": ("receptor_family", "receptor_protein_family", "receptor_homology_cluster", "homology_cluster"),
@@ -322,7 +486,7 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
                     break
         if canonical not in out.columns:
             out[canonical] = ""
-    cols = ["species", "clade", "resource", "ligand_gene", "receptor_gene", "ligand_family", "receptor_family"]
+    cols = ["species", "clade", "resource", "ligand_gene", "receptor_gene", "ligand_family", "receptor_family", "ligand_role_score", "receptor_role_score"]
     out = out[cols].drop_duplicates().copy()
     for col in cols:
         out[col] = out[col].fillna("").astype(str)
@@ -347,6 +511,18 @@ def _family_for_gene(frame: pd.DataFrame, side: str, gene: str) -> str:
         return ""
     values = [str(value) for value in sub[family_col].astype(str) if str(value)]
     return values[0] if values else ""
+
+
+def _role_score_for_gene(frame: pd.DataFrame, side: str, gene: str) -> str:
+    gene_col = f"{side}_gene"
+    score_col = f"{side}_role_score"
+    if score_col not in frame.columns:
+        return ""
+    sub = frame[frame[gene_col].astype(str) == str(gene)]
+    if sub.empty:
+        return ""
+    values = pd.to_numeric(sub[score_col], errors="coerce").dropna()
+    return "" if values.empty else str(float(values.iloc[0]))
 
 
 def _random_train_test_indices(y: np.ndarray, *, random_state: int) -> tuple[np.ndarray, np.ndarray]:
@@ -457,8 +633,6 @@ def _evaluate_pair_split(
     feature_encoder: str,
     random_state: int,
 ) -> dict[str, object]:
-    from sklearn.metrics import average_precision_score, roc_auc_score
-
     if len(train_idx) == 0 or len(test_idx) == 0:
         return {"status": "skipped", "reason": "Empty train or test split.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
     y_train = y[train_idx]
@@ -471,17 +645,82 @@ def _evaluate_pair_split(
     test_features = make_lr_pair_features(pairs.iloc[test_idx], embeddings, encoder=feature_encoder, pca_model=train_features.pca_model)
     clf = _fit_pair_model(model, train_features.X, y_train, random_state=random_state)
     scores = _predict_scores(clf, test_features.X)
+    metrics = _classification_metrics(y_test, scores)
+    baselines = _baseline_metrics(pairs.iloc[train_idx], pairs.iloc[test_idx], test_features, y_test, random_state=random_state)
     return {
         "status": "ok",
         "n_train": int(len(train_idx)),
         "n_test": int(len(test_idx)),
         "n_train_positive": int(y_train.sum()),
         "n_test_positive": int(y_test.sum()),
-        "pr_auc": float(average_precision_score(y_test, scores)),
-        "roc_auc": _safe_roc_auc(y_test, scores, roc_auc_score),
-        "top_k_precision": _top_k_precision(y_test, scores, ks=(100, 500, 1000, 5000)),
+        "pr_auc": metrics["pr_auc"],
+        "roc_auc": metrics["roc_auc"],
+        "top_k_precision": metrics["top_k_precision"],
+        "baseline_pr_auc": {name: value["pr_auc"] for name, value in baselines.items()},
+        "baseline_top_k_precision": {name: value["top_k_precision"] for name, value in baselines.items()},
+        "baseline_delta_pr_auc": {name: metrics["pr_auc"] - value["pr_auc"] for name, value in baselines.items()},
+        "baseline_delta_top_k_precision": {
+            name: {
+                k: metrics["top_k_precision"][k] - baseline_metrics["top_k_precision"][k]
+                for k in metrics["top_k_precision"]
+            }
+            for name, baseline_metrics in baselines.items()
+        },
         "feature_encoder_fit": "train_split_only",
     }
+
+
+def _classification_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, object]:
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    return {
+        "pr_auc": float(average_precision_score(y_true, scores)),
+        "roc_auc": _safe_roc_auc(y_true, scores, roc_auc_score),
+        "top_k_precision": _top_k_precision(y_true, scores, ks=(100, 500, 1000, 5000)),
+    }
+
+
+def _baseline_metrics(
+    train_pairs: pd.DataFrame,
+    test_pairs: pd.DataFrame,
+    test_features,
+    y_test: np.ndarray,
+    *,
+    random_state: int,
+) -> dict[str, dict[str, object]]:
+    scores = {
+        "degree_prior": _degree_prior_scores(train_pairs, test_pairs),
+        "embedding_cosine": _feature_scores(test_features, "cosine"),
+        "role_only": _role_only_scores(test_pairs),
+        "random": np.random.default_rng(random_state).random(len(test_pairs)),
+    }
+    return {name: _classification_metrics(y_test, values) for name, values in scores.items()}
+
+
+def _degree_prior_scores(train_pairs: pd.DataFrame, test_pairs: pd.DataFrame) -> np.ndarray:
+    positives = train_pairs[train_pairs["label"].astype(int) == 1]
+    ligand_counts = positives["ligand_gene"].astype(str).value_counts()
+    receptor_counts = positives["receptor_gene"].astype(str).value_counts()
+    scores = []
+    for row in test_pairs.itertuples(index=False):
+        scores.append(float(ligand_counts.get(str(row.ligand_gene), 0) + 1) * float(receptor_counts.get(str(row.receptor_gene), 0) + 1))
+    values = np.asarray(scores, dtype=float)
+    return values / values.max() if values.size and values.max() > 0 else values
+
+
+def _feature_scores(features, feature_name: str) -> np.ndarray:
+    if feature_name not in features.feature_names:
+        return np.zeros(len(features.pairs), dtype=float)
+    values = features.X[:, features.feature_names.index(feature_name)].astype(float)
+    if feature_name == "cosine":
+        values = (values + 1.0) / 2.0
+    return values
+
+
+def _role_only_scores(test_pairs: pd.DataFrame) -> np.ndarray:
+    ligand = pd.to_numeric(test_pairs.get("ligand_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
+    receptor = pd.to_numeric(test_pairs.get("receptor_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
+    return (ligand + receptor) / 2.0
 
 
 def _fit_calibrator_from_split(
@@ -571,11 +810,65 @@ def _top_k_precision(y_true: np.ndarray, scores: np.ndarray, *, ks: Sequence[int
 def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
     if not folds:
         return {"n_usable_folds": 0}
-    return {
+    baseline_names = sorted({name for fold in folds for name in fold.get("baseline_pr_auc", {})})
+    top_k_names = sorted({name for fold in folds for name in fold.get("top_k_precision", {})})
+    baseline_mean = {
+        name: float(np.mean([float(fold["baseline_pr_auc"][name]) for fold in folds if name in fold.get("baseline_pr_auc", {})]))
+        for name in baseline_names
+    }
+    delta_mean = {
+        name: float(np.mean([float(fold["baseline_delta_pr_auc"][name]) for fold in folds if name in fold.get("baseline_delta_pr_auc", {})]))
+        for name in baseline_names
+    }
+    top_k_mean = {
+        name: float(np.mean([float(fold["top_k_precision"][name]) for fold in folds if name in fold.get("top_k_precision", {})]))
+        for name in top_k_names
+    }
+    baseline_top_k_mean = {
+        baseline: {
+            k: float(
+                np.mean(
+                    [
+                        float(fold["baseline_top_k_precision"][baseline][k])
+                        for fold in folds
+                        if baseline in fold.get("baseline_top_k_precision", {})
+                        and k in fold["baseline_top_k_precision"][baseline]
+                    ]
+                )
+            )
+            for k in top_k_names
+        }
+        for baseline in baseline_names
+    }
+    baseline_top_k_delta_mean = {
+        baseline: {
+            k: float(
+                np.mean(
+                    [
+                        float(fold["baseline_delta_top_k_precision"][baseline][k])
+                        for fold in folds
+                        if baseline in fold.get("baseline_delta_top_k_precision", {})
+                        and k in fold["baseline_delta_top_k_precision"][baseline]
+                    ]
+                )
+            )
+            for k in top_k_names
+        }
+        for baseline in baseline_names
+    }
+    out = {
         "n_usable_folds": len(folds),
         "mean_pr_auc": float(np.mean([float(fold["pr_auc"]) for fold in folds])),
         "mean_roc_auc": float(np.mean([float(fold["roc_auc"]) for fold in folds])),
     }
+    if top_k_mean:
+        out["mean_top_k_precision"] = top_k_mean
+    if baseline_mean:
+        out["mean_baseline_pr_auc"] = baseline_mean
+        out["mean_baseline_delta_pr_auc"] = delta_mean
+        out["mean_baseline_top_k_precision"] = baseline_top_k_mean
+        out["mean_baseline_delta_top_k_precision"] = baseline_top_k_delta_mean
+    return out
 
 
 def _fit_pair_model(model: str, X: np.ndarray, y: np.ndarray, *, random_state: int):
@@ -626,8 +919,8 @@ def _heuristic_pair_scores(pairs: pd.DataFrame, embeddings: pd.DataFrame) -> np.
     features = make_lr_pair_features(pairs, embeddings)
     cosine_idx = features.feature_names.index("cosine")
     cosine = features.X[:, cosine_idx]
-    ligand_role = pairs.get("ligand_role_score", pd.Series([0.5] * len(pairs))).astype(float).to_numpy()
-    receptor_role = pairs.get("receptor_role_score", pd.Series([0.5] * len(pairs))).astype(float).to_numpy()
+    ligand_role = pd.to_numeric(pairs.get("ligand_role_score", pd.Series([0.5] * len(pairs))), errors="coerce").fillna(0.5).to_numpy()
+    receptor_role = pd.to_numeric(pairs.get("receptor_role_score", pd.Series([0.5] * len(pairs))), errors="coerce").fillna(0.5).to_numpy()
     score = 0.35 * ((cosine + 1.0) / 2.0) + 0.325 * ligand_role + 0.325 * receptor_role
     return np.clip(score, 0.0, 1.0)
 
@@ -654,9 +947,15 @@ def _model_card_markdown(card: dict[str, object]) -> str:
             continue
         if item.get("status") == "ok" and "summary" in item:
             summary = item["summary"]
-            lines.append(f"- `{name}`: {summary.get('n_usable_folds', 0)} usable folds, mean PR-AUC {float(summary.get('mean_pr_auc', float('nan'))):.4f}")
+            baseline = summary.get("mean_baseline_pr_auc", {})
+            strongest = max(baseline.items(), key=lambda kv: kv[1]) if baseline else None
+            suffix = f", strongest baseline `{strongest[0]}` {float(strongest[1]):.4f}" if strongest else ""
+            lines.append(f"- `{name}`: {summary.get('n_usable_folds', 0)} usable folds, mean PR-AUC {float(summary.get('mean_pr_auc', float('nan'))):.4f}{suffix}")
         elif item.get("status") == "ok":
-            lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}")
+            baseline = item.get("baseline_pr_auc", {})
+            strongest = max(baseline.items(), key=lambda kv: kv[1]) if baseline else None
+            suffix = f", strongest baseline `{strongest[0]}` {float(strongest[1]):.4f}" if strongest else ""
+            lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}{suffix}")
         else:
             lines.append(f"- `{name}`: skipped ({item.get('reason', 'no usable folds')})")
     if card.get("calibration_metrics"):
