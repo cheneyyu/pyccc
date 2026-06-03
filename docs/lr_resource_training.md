@@ -32,20 +32,32 @@ The first implementation is conservative:
 Training scripts accept normalized TSV files:
 
 ```bash
+uv run python scripts/normalize_lr_resource.py \
+  --path cellchat_human.tsv \
+  --schema cellchat \
+  --species human \
+  --taxon-id 9606 \
+  --output normalized_cellchat_human.tsv
+
+uv run python scripts/build_lr_training_table.py \
+  --normalized-lr normalized_cellchat_human.tsv \
+  --protein-fasta human=human.longest_protein.fa \
+  --output-dir data/lr_training
+
 uv run python scripts/embed_proteome_esmc.py \
-  --protein-fasta human.longest_protein.fa \
-  --output human.embeddings.tsv \
+  --protein-table data/lr_training/training_proteins.tsv \
+  --output data/lr_training/training_embeddings.tsv \
   --backend hash
 
 uv run --extra predict python scripts/train_role_classifier.py \
-  --training-lr normalized_lr.tsv \
-  --embeddings human.embeddings.tsv \
+  --training-lr data/lr_training/training_interactions.tsv \
+  --embeddings data/lr_training/training_embeddings.tsv \
   --output-dir models/universal_esmc300m_role_v0 \
   --model lightgbm
 
 uv run --extra predict python scripts/train_lr_predictor.py \
-  --training-lr normalized_lr.tsv \
-  --embeddings human.embeddings.tsv \
+  --training-lr data/lr_training/training_interactions.tsv \
+  --embeddings data/lr_training/training_embeddings.tsv \
   --output-dir models/universal_esmc300m_lgbm_v0 \
   --model lightgbm \
   --density-groupby clade

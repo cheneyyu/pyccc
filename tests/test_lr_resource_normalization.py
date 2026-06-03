@@ -1,3 +1,8 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -54,3 +59,73 @@ def test_load_training_lr_resources_strict_missing_columns_fails():
             [{"frame": pd.DataFrame({"not_ligand": ["A"]}), "schema": "generic", "species": "x", "taxon_id": 1}],
             strict=True,
         )
+
+
+def test_build_lr_training_table_script_outputs_sequences_and_metadata(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    normalized = pd.DataFrame(
+        {
+            "ligand_gene": ["L1", "L2"],
+            "receptor_gene": ["R1", "R2"],
+            "species": ["human", "mouse"],
+            "taxon_id": [9606, 10090],
+            "resource": ["fixture", "fixture"],
+            "evidence_type": ["curated_direct", "user_supplied"],
+            "annotation": ["", ""],
+            "pathway": ["P1", "P2"],
+        }
+    )
+    lr_path = tmp_path / "normalized.tsv"
+    normalized.to_csv(lr_path, sep="\t", index=False)
+    human_fasta = tmp_path / "human.fa"
+    human_fasta.write_text(">pL1 gene=L1\nMCCCC\n>pR1 gene=R1\nMAVVV\n", encoding="utf-8")
+    mouse_fasta = tmp_path / "mouse.fa"
+    mouse_fasta.write_text(">pL2 gene=L2\nMDDDD\n>pR2 gene=R2\nMIIII\n", encoding="utf-8")
+    out_dir = tmp_path / "training"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "build_lr_training_table.py"),
+            "--normalized-lr",
+            str(lr_path),
+            "--protein-fasta",
+            f"human={human_fasta}",
+            "--protein-fasta",
+            f"mouse={mouse_fasta}",
+            "--output-dir",
+            str(out_dir),
+        ],
+        check=True,
+        cwd=root,
+    )
+
+    interactions = pd.read_csv(out_dir / "training_interactions.tsv", sep="\t")
+    proteins = pd.read_csv(out_dir / "training_proteins.tsv", sep="\t")
+    metadata = json.loads((out_dir / "training_metadata.json").read_text(encoding="utf-8"))
+
+    assert interactions["is_positive_label"].tolist() == [True, False]
+    assert set(interactions["ligand_sequence"]) == {"MCCCC", "MDDDD"}
+    assert set(proteins["species"]) == {"human", "mouse"}
+    assert metadata["n_interactions"] == 2
+
+    emb_path = tmp_path / "training_embeddings.tsv"
+    subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "embed_proteome_esmc.py"),
+            "--protein-table",
+            str(out_dir / "training_proteins.tsv"),
+            "--output",
+            str(emb_path),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "--backend",
+            "hash",
+        ],
+        check=True,
+        cwd=root,
+    )
+    embeddings = pd.read_csv(emb_path, sep="\t")
+    assert embeddings.shape[0] == proteins.shape[0]
+    assert embeddings["embedding"].str.contains(",").all()
