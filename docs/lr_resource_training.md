@@ -84,11 +84,12 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - leave-resource-out folds when multiple resources are present,
 - leave-family-out folds when ligand/receptor family labels are present,
 - leave-clade-out folds when a `clade` column is present and requested,
-- PR-AUC, ROC-AUC, and top-K precision at K = 100, 500, 1000, and 5000.
+- PR-AUC, ROC-AUC, top-K precision, top-K recall, and top-K enrichment at
+  K = 100, 500, 1000, and 5000.
 - held-out probability calibration using isotonic regression by default,
 - a final deployment model refit on all training pairs after validation.
 - baseline comparisons against degree prior, embedding cosine, family-pair
-  transfer, role-only, and random scores.
+  transfer, role-only, and random scores for PR-AUC and top-K ranker metrics.
 - model-stack metadata: training resources, species/clades included, positive
   and pseudo-negative counts by species, embedding model name/revision/pooling,
   and the serialized pair-model parameters.

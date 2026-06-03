@@ -12,7 +12,7 @@ The model card must include:
 - feature encoder,
 - density prior computation,
 - validation splits,
-- PR-AUC and top-K precision,
+- PR-AUC, top-K precision, top-K recall, and top-K enrichment,
 - calibration method or rank-thresholding caveat,
 - intended use,
 - out-of-scope use,
@@ -41,9 +41,9 @@ uv run --extra predict python scripts/train_lr_predictor.py \
 ```
 
 Before advertising a DB-free predictor beyond demos, require leave-species-out
-performance above expression/role-only baselines, top-K precision above
-density-matched random controls, and honest calibration or rank-threshold
-reporting.
+performance above expression/role-only baselines, top-K precision and
+top-K enrichment above density-matched random controls, useful top-K recall,
+and honest calibration or rank-threshold reporting.
 
 Current generated cards include a machine-readable `validation_report` with a
 random stratified split plus leakage-aware leave-species, leave-resource, and
@@ -65,8 +65,10 @@ Generated cards also record:
 - ESMC embedding model name/revision/pooling and final pair-model parameters,
 - calibration method and calibration metrics,
 - Brier score and 10-bin expected calibration error when calibration is usable.
-- baseline PR-AUC comparisons for degree prior, embedding cosine,
-  family-pair transfer, role-only, and random scores.
+- baseline PR-AUC and top-K ranker comparisons for degree prior, embedding
+  cosine, family-pair transfer, role-only, and random scores. Top-K ranker
+  comparisons include precision, recall, and enrichment at K = 100, 500, 1000,
+  and 5000.
 - PU pseudo-negative sampling counts by species, degree-matching metadata,
   easy-negative counts, and the configured homolog-near exclusion rule. The v0
   homology exclusion uses ligand/receptor family or homology-cluster labels

@@ -146,10 +146,16 @@ def train_lr_link_predictor(
         "pr_auc": float(random_metrics["pr_auc"]),
         "roc_auc": float(random_metrics["roc_auc"]),
         "top_k_precision": random_metrics.get("top_k_precision", {}),
+        "top_k_recall": random_metrics.get("top_k_recall", {}),
+        "top_k_enrichment": random_metrics.get("top_k_enrichment", {}),
         "baseline_pr_auc": random_metrics.get("baseline_pr_auc", {}),
         "baseline_top_k_precision": random_metrics.get("baseline_top_k_precision", {}),
+        "baseline_top_k_recall": random_metrics.get("baseline_top_k_recall", {}),
+        "baseline_top_k_enrichment": random_metrics.get("baseline_top_k_enrichment", {}),
         "baseline_delta_pr_auc": random_metrics.get("baseline_delta_pr_auc", {}),
         "baseline_delta_top_k_precision": random_metrics.get("baseline_delta_top_k_precision", {}),
+        "baseline_delta_top_k_recall": random_metrics.get("baseline_delta_top_k_recall", {}),
+        "baseline_delta_top_k_enrichment": random_metrics.get("baseline_delta_top_k_enrichment", {}),
         "n_pairs": int(len(y)),
         "n_positive": int(y.sum()),
         "n_negative": int(len(y) - y.sum()),
@@ -1167,6 +1173,14 @@ def _repeat_metric_rows(report: dict[str, object], *, repeat: int, seed: int) ->
             if isinstance(top_k, dict):
                 for key, value in top_k.items():
                     row[f"precision_{key}"] = _coerce_float(value)
+            top_k_recall = metric.get("mean_top_k_recall", metric.get("top_k_recall", {}))
+            if isinstance(top_k_recall, dict):
+                for key, value in top_k_recall.items():
+                    row[f"recall_{key}"] = _coerce_float(value)
+            top_k_enrichment = metric.get("mean_top_k_enrichment", metric.get("top_k_enrichment", {}))
+            if isinstance(top_k_enrichment, dict):
+                for key, value in top_k_enrichment.items():
+                    row[f"enrichment_{key}"] = _coerce_float(value)
         else:
             row["reason"] = str(item.get("reason", "no usable folds"))
         rows.append(row)
@@ -1207,6 +1221,26 @@ def _summarize_repeat_metric_rows(rows: list[dict[str, object]]) -> dict[str, ob
                 item["top_k_precision_std"] = {
                     col.removeprefix("precision_"): _std_float(usable[col])
                     for col in precision_cols
+                }
+            recall_cols = [col for col in usable.columns if col.startswith("recall_top_")]
+            if recall_cols:
+                item["top_k_recall_mean"] = {
+                    col.removeprefix("recall_"): _mean_float(usable[col])
+                    for col in recall_cols
+                }
+                item["top_k_recall_std"] = {
+                    col.removeprefix("recall_"): _std_float(usable[col])
+                    for col in recall_cols
+                }
+            enrichment_cols = [col for col in usable.columns if col.startswith("enrichment_top_")]
+            if enrichment_cols:
+                item["top_k_enrichment_mean"] = {
+                    col.removeprefix("enrichment_"): _mean_float(usable[col])
+                    for col in enrichment_cols
+                }
+                item["top_k_enrichment_std"] = {
+                    col.removeprefix("enrichment_"): _std_float(usable[col])
+                    for col in enrichment_cols
                 }
         summary[str(split)] = item
     return summary
@@ -1324,13 +1358,31 @@ def _evaluate_pair_split(
         "pr_auc": metrics["pr_auc"],
         "roc_auc": metrics["roc_auc"],
         "top_k_precision": metrics["top_k_precision"],
+        "top_k_recall": metrics["top_k_recall"],
+        "top_k_enrichment": metrics["top_k_enrichment"],
         "baseline_pr_auc": {name: value["pr_auc"] for name, value in baselines.items()},
         "baseline_top_k_precision": {name: value["top_k_precision"] for name, value in baselines.items()},
+        "baseline_top_k_recall": {name: value["top_k_recall"] for name, value in baselines.items()},
+        "baseline_top_k_enrichment": {name: value["top_k_enrichment"] for name, value in baselines.items()},
         "baseline_delta_pr_auc": {name: metrics["pr_auc"] - value["pr_auc"] for name, value in baselines.items()},
         "baseline_delta_top_k_precision": {
             name: {
                 k: metrics["top_k_precision"][k] - baseline_metrics["top_k_precision"][k]
                 for k in metrics["top_k_precision"]
+            }
+            for name, baseline_metrics in baselines.items()
+        },
+        "baseline_delta_top_k_recall": {
+            name: {
+                k: metrics["top_k_recall"][k] - baseline_metrics["top_k_recall"][k]
+                for k in metrics["top_k_recall"]
+            }
+            for name, baseline_metrics in baselines.items()
+        },
+        "baseline_delta_top_k_enrichment": {
+            name: {
+                k: metrics["top_k_enrichment"][k] - baseline_metrics["top_k_enrichment"][k]
+                for k in metrics["top_k_enrichment"]
             }
             for name, baseline_metrics in baselines.items()
         },
@@ -1341,10 +1393,11 @@ def _evaluate_pair_split(
 def _classification_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, object]:
     from sklearn.metrics import average_precision_score, roc_auc_score
 
+    ranking = _top_k_ranking_metrics(y_true, scores, ks=(100, 500, 1000, 5000))
     return {
         "pr_auc": float(average_precision_score(y_true, scores)),
         "roc_auc": _safe_roc_auc(y_true, scores, roc_auc_score),
-        "top_k_precision": _top_k_precision(y_true, scores, ks=(100, 500, 1000, 5000)),
+        **ranking,
     }
 
 
@@ -1492,9 +1545,32 @@ def _expected_calibration_error(y_true: np.ndarray, probabilities: np.ndarray, *
     return float(ece)
 
 
-def _top_k_precision(y_true: np.ndarray, scores: np.ndarray, *, ks: Sequence[int]) -> dict[str, float]:
+def _top_k_ranking_metrics(y_true: np.ndarray, scores: np.ndarray, *, ks: Sequence[int]) -> dict[str, dict[str, float]]:
+    y_true = np.asarray(y_true, dtype=float)
+    scores = np.asarray(scores, dtype=float)
     order = np.argsort(-scores)
-    return {f"top_{k}": float(y_true[order[: min(k, len(order))]].mean()) if len(order) else float("nan") for k in ks}
+    n_positive = float(y_true.sum())
+    prevalence = float(y_true.mean()) if len(y_true) else float("nan")
+    precision: dict[str, float] = {}
+    recall: dict[str, float] = {}
+    enrichment: dict[str, float] = {}
+    for k in ks:
+        key = f"top_{k}"
+        kk = min(int(k), len(order))
+        if kk == 0:
+            precision[key] = float("nan")
+            recall[key] = float("nan")
+            enrichment[key] = float("nan")
+            continue
+        selected = y_true[order[:kk]]
+        precision[key] = float(selected.mean())
+        recall[key] = float(selected.sum() / n_positive) if n_positive > 0 else float("nan")
+        enrichment[key] = float(precision[key] / prevalence) if prevalence > 0 else float("nan")
+    return {
+        "top_k_precision": precision,
+        "top_k_recall": recall,
+        "top_k_enrichment": enrichment,
+    }
 
 
 def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
@@ -1510,42 +1586,15 @@ def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
         name: float(np.mean([float(fold["baseline_delta_pr_auc"][name]) for fold in folds if name in fold.get("baseline_delta_pr_auc", {})]))
         for name in baseline_names
     }
-    top_k_mean = {
-        name: float(np.mean([float(fold["top_k_precision"][name]) for fold in folds if name in fold.get("top_k_precision", {})]))
-        for name in top_k_names
-    }
-    baseline_top_k_mean = {
-        baseline: {
-            k: float(
-                np.mean(
-                    [
-                        float(fold["baseline_top_k_precision"][baseline][k])
-                        for fold in folds
-                        if baseline in fold.get("baseline_top_k_precision", {})
-                        and k in fold["baseline_top_k_precision"][baseline]
-                    ]
-                )
-            )
-            for k in top_k_names
-        }
-        for baseline in baseline_names
-    }
-    baseline_top_k_delta_mean = {
-        baseline: {
-            k: float(
-                np.mean(
-                    [
-                        float(fold["baseline_delta_top_k_precision"][baseline][k])
-                        for fold in folds
-                        if baseline in fold.get("baseline_delta_top_k_precision", {})
-                        and k in fold["baseline_delta_top_k_precision"][baseline]
-                    ]
-                )
-            )
-            for k in top_k_names
-        }
-        for baseline in baseline_names
-    }
+    top_k_mean = _mean_top_k_metric(folds, "top_k_precision", top_k_names)
+    top_k_recall_mean = _mean_top_k_metric(folds, "top_k_recall", top_k_names)
+    top_k_enrichment_mean = _mean_top_k_metric(folds, "top_k_enrichment", top_k_names)
+    baseline_top_k_mean = _mean_baseline_top_k_metric(folds, "baseline_top_k_precision", baseline_names, top_k_names)
+    baseline_top_k_delta_mean = _mean_baseline_top_k_metric(folds, "baseline_delta_top_k_precision", baseline_names, top_k_names)
+    baseline_top_k_recall_mean = _mean_baseline_top_k_metric(folds, "baseline_top_k_recall", baseline_names, top_k_names)
+    baseline_top_k_recall_delta_mean = _mean_baseline_top_k_metric(folds, "baseline_delta_top_k_recall", baseline_names, top_k_names)
+    baseline_top_k_enrichment_mean = _mean_baseline_top_k_metric(folds, "baseline_top_k_enrichment", baseline_names, top_k_names)
+    baseline_top_k_enrichment_delta_mean = _mean_baseline_top_k_metric(folds, "baseline_delta_top_k_enrichment", baseline_names, top_k_names)
     out = {
         "n_usable_folds": len(folds),
         "mean_pr_auc": float(np.mean([float(fold["pr_auc"]) for fold in folds])),
@@ -1553,11 +1602,54 @@ def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
     }
     if top_k_mean:
         out["mean_top_k_precision"] = top_k_mean
+        out["mean_top_k_recall"] = top_k_recall_mean
+        out["mean_top_k_enrichment"] = top_k_enrichment_mean
     if baseline_mean:
         out["mean_baseline_pr_auc"] = baseline_mean
         out["mean_baseline_delta_pr_auc"] = delta_mean
         out["mean_baseline_top_k_precision"] = baseline_top_k_mean
         out["mean_baseline_delta_top_k_precision"] = baseline_top_k_delta_mean
+        out["mean_baseline_top_k_recall"] = baseline_top_k_recall_mean
+        out["mean_baseline_delta_top_k_recall"] = baseline_top_k_recall_delta_mean
+        out["mean_baseline_top_k_enrichment"] = baseline_top_k_enrichment_mean
+        out["mean_baseline_delta_top_k_enrichment"] = baseline_top_k_enrichment_delta_mean
+    return out
+
+
+def _mean_top_k_metric(folds: Sequence[dict[str, object]], metric: str, top_k_names: Sequence[str]) -> dict[str, float]:
+    out = {}
+    for key in top_k_names:
+        values = [
+            float(fold[metric][key])
+            for fold in folds
+            if isinstance(fold.get(metric), dict) and key in fold[metric]
+        ]
+        if values:
+            out[key] = float(np.mean(values))
+    return out
+
+
+def _mean_baseline_top_k_metric(
+    folds: Sequence[dict[str, object]],
+    metric: str,
+    baseline_names: Sequence[str],
+    top_k_names: Sequence[str],
+) -> dict[str, dict[str, float]]:
+    out = {}
+    for baseline in baseline_names:
+        values_by_k = {}
+        for key in top_k_names:
+            values = [
+                float(fold[metric][baseline][key])
+                for fold in folds
+                if isinstance(fold.get(metric), dict)
+                and baseline in fold[metric]
+                and key in fold[metric][baseline]
+            ]
+            if values:
+                values_by_k[key] = float(np.mean(values))
+        if values_by_k:
+            out[baseline] = values_by_k
     return out
 
 
@@ -1654,12 +1746,14 @@ def _model_card_markdown(card: dict[str, object]) -> str:
             baseline = summary.get("mean_baseline_pr_auc", {})
             strongest = max(baseline.items(), key=lambda kv: kv[1]) if baseline else None
             suffix = f", strongest baseline `{strongest[0]}` {float(strongest[1]):.4f}" if strongest else ""
-            lines.append(f"- `{name}`: {summary.get('n_usable_folds', 0)} usable folds, mean PR-AUC {float(summary.get('mean_pr_auc', float('nan'))):.4f}{suffix}")
+            rank_suffix = _model_card_rank_suffix(summary)
+            lines.append(f"- `{name}`: {summary.get('n_usable_folds', 0)} usable folds, mean PR-AUC {float(summary.get('mean_pr_auc', float('nan'))):.4f}{suffix}{rank_suffix}")
         elif item.get("status") == "ok":
             baseline = item.get("baseline_pr_auc", {})
             strongest = max(baseline.items(), key=lambda kv: kv[1]) if baseline else None
             suffix = f", strongest baseline `{strongest[0]}` {float(strongest[1]):.4f}" if strongest else ""
-            lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}{suffix}")
+            rank_suffix = _model_card_rank_suffix(item)
+            lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}{suffix}{rank_suffix}")
         else:
             lines.append(f"- `{name}`: skipped ({item.get('reason', 'no usable folds')})")
     sampling = card.get("negative_sampling", {})
@@ -1727,3 +1821,18 @@ def _model_card_markdown(card: dict[str, object]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _model_card_rank_suffix(metric: dict[str, object]) -> str:
+    enrichment = metric.get("mean_top_k_enrichment", metric.get("top_k_enrichment", {}))
+    recall = metric.get("mean_top_k_recall", metric.get("top_k_recall", {}))
+    if not isinstance(enrichment, dict) or not isinstance(recall, dict):
+        return ""
+    enrichment_top100 = enrichment.get("top_100")
+    recall_top100 = recall.get("top_100")
+    if enrichment_top100 is None or recall_top100 is None:
+        return ""
+    return ", top-100 enrichment {enrichment:.2f}x, top-100 recall {recall:.4f}".format(
+        enrichment=float(enrichment_top100),
+        recall=float(recall_top100),
+    )

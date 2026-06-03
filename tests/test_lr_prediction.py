@@ -156,6 +156,7 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert (tmp_path / "lr_link_model.joblib").exists()
     assert (tmp_path / "model_card.md").exists()
     assert (tmp_path / "density_prior.tsv").exists()
+    assert "top-100 enrichment" in (tmp_path / "model_card.md").read_text(encoding="utf-8")
     payload = load(tmp_path / "lr_link_model.joblib")
     assert "calibrator" in payload
     assert card["metrics"]["n_positive"] == 4
@@ -166,6 +167,8 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["negative_repeat_report"]["status"] == "ok"
     assert card["negative_repeat_report"]["summary"]["random_stratified"]["n_usable_repeats"] == 2
     assert "pr_auc_std" in card["negative_repeat_report"]["summary"]["random_stratified"]
+    assert "top_100" in card["negative_repeat_report"]["summary"]["random_stratified"]["top_k_recall_mean"]
+    assert "top_100" in card["negative_repeat_report"]["summary"]["random_stratified"]["top_k_enrichment_mean"]
     assert card["species_included"] == ["toy_a", "toy_b"]
     assert card["training_resources"] == ["fixture_a", "fixture_b"]
     assert card["embedding_model"]["model_name"] == ["biohub/ESMC-300M"]
@@ -185,10 +188,18 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
     assert "degree_prior" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert "top_100" in card["metrics"]["top_k_recall"]
+    assert "top_100" in card["metrics"]["top_k_enrichment"]
+    assert "degree_prior" in card["metrics"]["baseline_top_k_recall"]
+    assert "degree_prior" in card["metrics"]["baseline_top_k_enrichment"]
     assert "family_pair_transfer" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
     assert "embedding_cosine" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_pr_auc"]
     assert "top_100" in card["validation_report"]["leave_species_out"]["summary"]["mean_top_k_precision"]
+    assert "top_100" in card["validation_report"]["leave_species_out"]["summary"]["mean_top_k_recall"]
+    assert "top_100" in card["validation_report"]["leave_species_out"]["summary"]["mean_top_k_enrichment"]
     assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_precision"]
+    assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_recall"]
+    assert "role_only" in card["validation_report"]["leave_species_out"]["summary"]["mean_baseline_top_k_enrichment"]
     gates = pc.evaluate_lr_model_quality_gates(card, required_splits=["leave_species_out"], min_pr_auc_delta=-1.0)
     assert gates.attrs["passed"]
     assert {"degree_prior", "embedding_cosine", "role_only", "random"}.issubset(set(gates["baseline"]))
