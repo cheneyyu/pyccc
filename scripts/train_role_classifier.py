@@ -9,7 +9,7 @@ import pyccc as pc
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a pyccc protein role classifier from normalized LR resources and embeddings.")
+    parser = argparse.ArgumentParser(description="Train pyccc LightGBM protein role classifiers from normalized LR resources and ESMC embeddings.")
     parser.add_argument("--training-lr", required=True)
     parser.add_argument("--embeddings", required=True)
     parser.add_argument("--output-dir", required=True)

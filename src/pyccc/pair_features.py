@@ -9,7 +9,7 @@ import pandas as pd
 
 @dataclass
 class LRPairFeatures:
-    """Feature matrix plus pair metadata for LR link prediction."""
+    """Feature matrix plus pair metadata for LR pair ranking."""
 
     pairs: pd.DataFrame
     X: np.ndarray

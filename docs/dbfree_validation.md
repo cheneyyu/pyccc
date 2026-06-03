@@ -7,9 +7,10 @@ soybean spatial sections.
 
 The conservative claim is:
 
-> DB-free ESMC-300M + LightGBM LR candidates are spatially more enriched than
-> matched-random, score-shuffled, role-only, embedding-only, and expression-only
-> controls.
+> DB-free LR candidates from ESMC-300M embedding, LightGBM protein role
+> classifiers, a LightGBM pair ranker, and a clade-aware density prior are
+> spatially more enriched than matched-random, score-shuffled, role-only,
+> embedding-only, and expression-only controls.
 
 Predicted LR edges are computational candidates, not validated biochemical
 binding events.

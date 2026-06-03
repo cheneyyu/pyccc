@@ -16,9 +16,9 @@ from .roles import predict_protein_roles
 from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes
 
 
-DBFREE_STACK_NAME = "esmc300m_lightgbm_clade_density_v0"
-DEFAULT_DBFREE_ROLE_MODEL = "models/universal_esmc300m_role_v0"
-DEFAULT_DBFREE_PAIR_MODEL = "models/universal_esmc300m_lgbm_v0"
+DBFREE_STACK_NAME = "esmc300m_lgbm_role_classifiers_lgbm_pair_ranker_clade_density_v0"
+DEFAULT_DBFREE_ROLE_MODEL = "models/universal_esmc300m_lgbm_role_classifiers_v0"
+DEFAULT_DBFREE_PAIR_MODEL = "models/universal_esmc300m_lgbm_pair_ranker_v0"
 
 
 def generate_lr_candidates_dbfree(
@@ -117,7 +117,7 @@ def train_lr_link_predictor(
     max_reference_pairs: int = 20000,
     random_state: int = 0,
 ) -> dict[str, object]:
-    """Train a pairwise LR link predictor and write a model card."""
+    """Train a pairwise LR ranker and write a model card."""
 
     from joblib import dump
 
@@ -601,11 +601,11 @@ def _validate_dbfree_prediction_stack(
     if role_model_bypassed:
         pass
     elif str(role_model) == "heuristic":
-        problems.append("production DB-free prediction requires a trained LightGBM protein role classifier")
+        problems.append("production DB-free prediction requires trained LightGBM protein role classifiers")
     else:
         role_path = Path(role_model)
         if not (role_path / "role_model.joblib").exists():
-            missing_paths.append(f"LightGBM protein role classifier: {role_path / 'role_model.joblib'}")
+            missing_paths.append(f"LightGBM protein role classifiers: {role_path / 'role_model.joblib'}")
     if str(model) == "heuristic":
         problems.append("production DB-free prediction requires a trained LightGBM pair ranker")
     else:
@@ -625,7 +625,7 @@ def _validate_dbfree_prediction_stack(
         raise ValueError("; ".join(problems) + ". Pass `allow_fixture_models=True` only for tests or dry runs.")
     if missing_paths:
         raise FileNotFoundError(
-            "Production DB-free prediction needs the ESMC-300M + LightGBM stack files. Missing: "
+            "Production DB-free prediction needs the ESMC-300M embedding + LightGBM role classifiers + LightGBM pair ranker + clade-aware density prior stack files. Missing: "
             + "; ".join(missing_paths)
             + ". Train them first or pass explicit paths."
         )

@@ -9,7 +9,7 @@ import pyccc as pc
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a pyccc LR link predictor from normalized LR resources and embeddings.")
+    parser = argparse.ArgumentParser(description="Train a pyccc LightGBM LR pair ranker from normalized LR resources and ESMC embeddings.")
     parser.add_argument("--training-lr", required=True)
     parser.add_argument("--embeddings", required=True)
     parser.add_argument("--output-dir", required=True)

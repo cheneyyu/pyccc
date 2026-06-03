@@ -60,7 +60,7 @@ def train_protein_role_classifier(
     dump({"models": models, "roles": list(roles), "model": model, "embedding_genes": proteins["gene_id"].astype(str).tolist()}, output / "role_model.joblib")
     card = {
         "model_name": output.name,
-        "model_stack": "esmc300m_lightgbm_clade_density_v0" if model == "lightgbm" else "fixture_or_baseline_role_classifier",
+        "model_stack": "esmc300m_lgbm_role_classifiers_v0" if model == "lightgbm" else "fixture_or_baseline_role_classifier",
         "model_type": "protein_role_classifier",
         "classifier": model,
         "roles": list(roles),

@@ -18,20 +18,22 @@ The model card must include:
 - out-of-scope use,
 - known failure modes.
 
-The scaffolded trainer writes a minimal card:
+The scaffolded trainer writes minimal cards for the intended production stack:
+ESMC-300M embeddings, LightGBM protein role classifiers, a LightGBM pair
+ranker, and a clade-aware density prior.
 
 ```bash
 uv run --extra predict python scripts/train_role_classifier.py \
   --training-lr data/lr_training/training_interactions.tsv \
   --embeddings data/lr_training/training_embeddings.tsv \
-  --output-dir models/universal_esmc300m_role_v0 \
+  --output-dir models/universal_esmc300m_lgbm_role_classifiers_v0 \
   --model lightgbm \
   --validation-fraction 0.25
 
 uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr normalized_lr.tsv \
   --embeddings embeddings.tsv \
-  --output-dir models/universal_esmc300m_lgbm_v0 \
+  --output-dir models/universal_esmc300m_lgbm_pair_ranker_v0 \
   --model lightgbm \
   --density-groupby clade \
   --negative-ratio 5 \

@@ -60,6 +60,10 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     }
     assert predicted.metadata["dbfree_model_stack"]["allow_fixture_models"]
     assert predicted.metadata["dbfree_model_stack"]["embedding_backend"] == "hash"
+    assert "esmc300m" in pc.DBFREE_STACK_NAME
+    assert "role_classifiers" in pc.DBFREE_STACK_NAME
+    assert "pair_ranker" in pc.DBFREE_STACK_NAME
+    assert "clade_density" in pc.DBFREE_STACK_NAME
     summary = predicted.metadata["prediction_summary"]
     assert summary.loc[0, "model_stack"] == pc.DBFREE_STACK_NAME
     assert "heuristic_role_model" in str(summary.loc[0, "warning"])
@@ -98,7 +102,7 @@ def test_dbfree_production_stack_rejects_implicit_fixture_models(tmp_path):
         raise AssertionError("fixture DB-free stack should require explicit opt-in")
 
     assert "ESMC-300M embeddings" in message
-    assert "LightGBM protein role classifier" in message
+    assert "LightGBM protein role classifiers" in message
     assert "LightGBM pair ranker" in message
     assert "clade-aware density" in message
     assert "allow_fixture_models=True" in message

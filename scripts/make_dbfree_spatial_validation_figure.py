@@ -51,10 +51,10 @@ def _panel_workflow(ax) -> None:
     ax.axis("off")
     boxes = [
         "protein FASTA/CDS\n+ spatial AnnData",
-        "ESMC-300M\nembeddings",
-        "LightGBM\nrole filters",
+        "ESMC-300M\nembedding",
+        "LightGBM protein\nrole classifiers",
         "LightGBM\npair ranker",
-        "density-prior\nLR table",
+        "clade-aware density\nprior LR table",
         "pyccc CCC\n+ spatial nulls",
     ]
     y = 0.5

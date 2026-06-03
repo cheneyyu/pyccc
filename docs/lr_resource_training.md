@@ -57,14 +57,14 @@ uv run --extra predict python scripts/embed_proteome_esmc.py \
 uv run --extra predict python scripts/train_role_classifier.py \
   --training-lr data/lr_training/training_interactions.tsv \
   --embeddings data/lr_training/training_embeddings.tsv \
-  --output-dir models/universal_esmc300m_role_v0 \
+  --output-dir models/universal_esmc300m_lgbm_role_classifiers_v0 \
   --model lightgbm \
   --validation-fraction 0.25
 
 uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr data/lr_training/training_interactions.tsv \
   --embeddings data/lr_training/training_embeddings.tsv \
-  --output-dir models/universal_esmc300m_lgbm_v0 \
+  --output-dir models/universal_esmc300m_lgbm_pair_ranker_v0 \
   --model lightgbm \
   --density-groupby clade \
   --negative-ratio 5 \
@@ -74,7 +74,8 @@ uv run --extra predict python scripts/train_lr_predictor.py \
 ```
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
-should use the ESMC-300M backend from the `predict` extra.
+should use ESMC-300M embeddings from the `predict` extra, then train the
+LightGBM protein role classifiers and LightGBM pair ranker shown above.
 
 The role classifier trainer writes `model_card.json` and `model_card.md` with
 one-vs-rest positive/negative counts, prevalence, stratified holdout PR-AUC,
@@ -127,7 +128,7 @@ After training, inspect quality gates programmatically:
 
 ```python
 gates = pc.evaluate_lr_model_quality_gates(
-    "models/universal_esmc300m_lgbm_v0/model_card.json",
+    "models/universal_esmc300m_lgbm_pair_ranker_v0/model_card.json",
     required_splits=["leave_species_out", "leave_resource_out"],
     min_pr_auc_delta=0.0,
     top_k="top_100",

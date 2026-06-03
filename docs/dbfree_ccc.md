@@ -11,7 +11,7 @@ validated biochemical interactions.
 The intended production stack is:
 
 ```text
-ESMC-300M mean-pooled protein embeddings
+ESMC-300M mean-pooled protein embedding
   -> LightGBM protein role classifiers
   -> LightGBM pair ranker
   -> clade-aware LR-density prior
@@ -31,7 +31,8 @@ Required inputs:
 - AnnData expression matrix,
 - gene identifiers matching `adata.var_names` or `adata.var[gene_id_key]`,
 - CDS FASTA or longest protein FASTA,
-- trained role and LR link predictor models, or explicit candidate lists.
+- trained LightGBM role-classifier and pair-ranker models, or explicit
+  candidate lists.
 
 ## Sequence Preparation
 
@@ -71,7 +72,7 @@ emb = pc.embed_proteins_esmc(
 roles = pc.predict_protein_roles(
     proteins=proteins,
     embeddings=emb,
-    model="models/universal_esmc300m_role_v0",
+    model="models/universal_esmc300m_lgbm_role_classifiers_v0",
 )
 ```
 
@@ -99,7 +100,7 @@ candidates = pc.generate_lr_candidates_dbfree(
 scores = pc.score_lr_candidates(
     candidate_pairs=candidates,
     embeddings=emb,
-    model="models/universal_esmc300m_lgbm_v0",
+    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
 )
 ```
 
@@ -140,7 +141,7 @@ predicted_db = pc.predict_lr_dbfree(
     role_model=None,
     ligand_candidates="known_secreted_genes.txt",
     receptor_candidates="known_surface_genes.txt",
-    model="models/universal_esmc300m_lgbm_v0",
+    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
     density_prior="auto",
 )
 ```
@@ -197,8 +198,8 @@ predicted_db = pc.predict_lr_dbfree(
     gene_id_key="gene_id",
     species_name="target_species",
     species_hint="unknown",
-    role_model="models/universal_esmc300m_role_v0",
-    model="models/universal_esmc300m_lgbm_v0",
+    role_model="models/universal_esmc300m_lgbm_role_classifiers_v0",
+    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
     density_prior="auto",
     embedding_model_name=pc.ESMC_300M_MODEL_NAME,
     min_score=0.50,
@@ -232,7 +233,7 @@ set is non-empty, the predicted LR table warning column records
 `unmatched_expression_genes` or `unmatched_protein_genes`.
 
 By default the wrapper assumes the production stack: ESMC-300M mean-pooled
-embeddings, a trained LightGBM protein role classifier, a trained LightGBM pair
+embeddings, trained LightGBM protein role classifiers, a trained LightGBM pair
 ranker, and a clade-aware density prior. Fixture-only hash embeddings,
 heuristic role/ranker models, or scalar density priors require
 `allow_fixture_models=True`; use that only for tests or dry runs.

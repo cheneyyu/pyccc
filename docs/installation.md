@@ -22,8 +22,9 @@ Add LIANA support only when you need LIANA import helpers:
 python -m pip install "pyccc[ggplot,interactive,omnipath,liana] @ git+https://github.com/cheneyyu/pyccc.git@main"
 ```
 
-Add experimental DB-free prediction dependencies only when you need sequence
-embedding and LR link prediction:
+Add experimental DB-free prediction dependencies only when you need the
+ESMC-300M embedding, LightGBM protein role classifiers, LightGBM pair ranker,
+and clade-aware density prior workflow:
 
 ```bash
 python -m pip install "pyccc[ggplot,interactive,omnipath,predict] @ git+https://github.com/cheneyyu/pyccc.git@main"
@@ -34,7 +35,7 @@ Optional extras:
 - `ggplot`: plotnine-based plotting functions in `pyccc.ggplot`
 - `interactive`: Plotly-based interactive river plots
 - `omnipath`: OmniPath ligand-receptor database loader
-- `predict`: experimental ESMC/LightGBM DB-free LR prediction dependencies
+- `predict`: experimental ESMC-300M/LightGBM DB-free LR prediction dependencies
 - `docs`: Sphinx and MyST dependencies for documentation builds
 - `liana`: LIANA import helpers
 
