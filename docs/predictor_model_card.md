@@ -36,7 +36,8 @@ uv run --extra predict python scripts/train_lr_predictor.py \
   --density-groupby clade \
   --negative-ratio 5 \
   --easy-negative-fraction 0.05 \
-  --excluded-homology-radius family_pair
+  --excluded-homology-radius family_pair \
+  --negative-repeats 3
 ```
 
 Before advertising a DB-free predictor beyond demos, require leave-species-out
@@ -70,6 +71,8 @@ Generated cards also record:
   easy-negative counts, and the configured homolog-near exclusion rule. The v0
   homology exclusion uses ligand/receptor family or homology-cluster labels
   when available; it does not infer new sequence homology clusters.
+- repeated PU negative-sampling validation summaries with PR-AUC/ROC-AUC
+  mean, standard deviation, and variance by split when `negative_repeats > 1`.
 - `density_prior.tsv` next to the serialized LightGBM pair ranker, so
   DB-free prediction can apply a clade-aware density prior with
   `density_prior="auto"`.

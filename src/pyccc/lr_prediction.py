@@ -106,6 +106,7 @@ def train_lr_link_predictor(
     negative_ratio: int = 5,
     easy_negative_fraction: float = 0.05,
     excluded_homology_radius: str = "family_pair",
+    negative_repeats: int = 1,
     calibration_method: str | None = "isotonic",
     density_groupby: str = "clade",
     max_reference_pairs: int = 20000,
@@ -115,6 +116,8 @@ def train_lr_link_predictor(
 
     from joblib import dump
 
+    if negative_repeats < 1:
+        raise ValueError("`negative_repeats` must be at least 1.")
     interactions = getattr(training_table, "interactions", training_table)
     pairs = _training_pairs(
         interactions,
@@ -161,6 +164,19 @@ def train_lr_link_predictor(
         requested_splits=validation_splits,
         model=model,
         feature_encoder=feature_encoder,
+        random_state=random_state,
+    )
+    repeat_report = _negative_repeat_validation_report(
+        interactions,
+        embeddings,
+        requested_splits=validation_splits,
+        model=model,
+        feature_encoder=feature_encoder,
+        negative_ratio=negative_ratio,
+        negative_strategy=negative_strategy,
+        easy_negative_fraction=easy_negative_fraction,
+        excluded_homology_radius=excluded_homology_radius,
+        n_repeats=negative_repeats,
         random_state=random_state,
     )
     features = make_lr_pair_features(pairs, embeddings, encoder=feature_encoder, fit_pca=True)
@@ -215,6 +231,8 @@ def train_lr_link_predictor(
         "negative_ratio": negative_ratio,
         "easy_negative_fraction": easy_negative_fraction,
         "excluded_homology_radius": excluded_homology_radius,
+        "negative_repeats": negative_repeats,
+        "negative_repeat_report": repeat_report,
         "negative_sampling": _negative_sampling_summary(pairs),
         "output_dir": str(output),
     }
@@ -1067,6 +1085,155 @@ def _validation_report(
     return report
 
 
+def _negative_repeat_validation_report(
+    interactions: pd.DataFrame,
+    embeddings: pd.DataFrame,
+    *,
+    requested_splits: Sequence[str],
+    model: str,
+    feature_encoder: str,
+    negative_ratio: int,
+    negative_strategy: str,
+    easy_negative_fraction: float,
+    excluded_homology_radius: str,
+    n_repeats: int,
+    random_state: int,
+) -> dict[str, object]:
+    if n_repeats <= 1:
+        return {"status": "skipped", "reason": "negative_repeats <= 1", "n_repeats": int(n_repeats)}
+    rows = []
+    seeds = [int(random_state + i) for i in range(n_repeats)]
+    for repeat, seed in enumerate(seeds):
+        try:
+            pairs = _training_pairs(
+                interactions,
+                embeddings=embeddings,
+                negative_ratio=negative_ratio,
+                negative_strategy=negative_strategy,
+                easy_negative_fraction=easy_negative_fraction,
+                excluded_homology_radius=excluded_homology_radius,
+                random_state=seed,
+            )
+            y = pairs["label"].astype(int).to_numpy()
+            if len(np.unique(y)) < 2:
+                raise ValueError("Sampled training pairs have fewer than two classes.")
+            report = _validation_report(
+                pairs,
+                embeddings,
+                y,
+                requested_splits=requested_splits,
+                model=model,
+                feature_encoder=feature_encoder,
+                random_state=seed,
+            )
+        except Exception as exc:  # pragma: no cover - defensive metadata path
+            rows.append(
+                {
+                    "repeat": int(repeat),
+                    "negative_seed": int(seed),
+                    "split": "all",
+                    "status": "skipped",
+                    "reason": str(exc),
+                }
+            )
+            continue
+        rows.extend(_repeat_metric_rows(report, repeat=repeat, seed=seed))
+    summary = _summarize_repeat_metric_rows(rows)
+    return {
+        "status": "ok" if any(item.get("n_usable_repeats", 0) for item in summary.values()) else "skipped",
+        "n_repeats": int(n_repeats),
+        "negative_seeds": seeds,
+        "per_repeat": rows,
+        "summary": summary,
+    }
+
+
+def _repeat_metric_rows(report: dict[str, object], *, repeat: int, seed: int) -> list[dict[str, object]]:
+    rows = []
+    for split, item in report.items():
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, object] = {
+            "repeat": int(repeat),
+            "negative_seed": int(seed),
+            "split": str(split),
+            "status": str(item.get("status", "skipped")),
+        }
+        metric = _split_metric_item(item)
+        if row["status"] == "ok" and isinstance(metric, dict):
+            row["pr_auc"] = _coerce_float(metric.get("mean_pr_auc", metric.get("pr_auc")))
+            row["roc_auc"] = _coerce_float(metric.get("mean_roc_auc", metric.get("roc_auc")))
+            top_k = metric.get("mean_top_k_precision", metric.get("top_k_precision", {}))
+            if isinstance(top_k, dict):
+                for key, value in top_k.items():
+                    row[f"precision_{key}"] = _coerce_float(value)
+        else:
+            row["reason"] = str(item.get("reason", "no usable folds"))
+        rows.append(row)
+    return rows
+
+
+def _summarize_repeat_metric_rows(rows: list[dict[str, object]]) -> dict[str, object]:
+    if not rows:
+        return {}
+    frame = pd.DataFrame(rows)
+    summary: dict[str, object] = {}
+    for split, sub in frame.groupby("split", sort=False):
+        usable = sub[sub["status"].astype(str) == "ok"].copy()
+        item: dict[str, object] = {
+            "n_repeats": int(len(sub)),
+            "n_usable_repeats": int(len(usable)),
+        }
+        skipped = sub[sub["status"].astype(str) != "ok"]
+        if not skipped.empty and "reason" in skipped.columns:
+            item["skipped_reasons"] = sorted({str(reason) for reason in skipped["reason"].dropna().astype(str)})
+        if not usable.empty:
+            item.update(
+                {
+                    "pr_auc_mean": _mean_float(usable["pr_auc"]),
+                    "pr_auc_std": _std_float(usable["pr_auc"]),
+                    "pr_auc_variance": _var_float(usable["pr_auc"]),
+                    "roc_auc_mean": _mean_float(usable["roc_auc"]),
+                    "roc_auc_std": _std_float(usable["roc_auc"]),
+                    "roc_auc_variance": _var_float(usable["roc_auc"]),
+                }
+            )
+            precision_cols = [col for col in usable.columns if col.startswith("precision_top_")]
+            if precision_cols:
+                item["top_k_precision_mean"] = {
+                    col.removeprefix("precision_"): _mean_float(usable[col])
+                    for col in precision_cols
+                }
+                item["top_k_precision_std"] = {
+                    col.removeprefix("precision_"): _std_float(usable[col])
+                    for col in precision_cols
+                }
+        summary[str(split)] = item
+    return summary
+
+
+def _coerce_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def _mean_float(values: pd.Series) -> float:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    return float(values.mean()) if not values.empty else np.nan
+
+
+def _std_float(values: pd.Series) -> float:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    return float(values.std(ddof=1)) if len(values) > 1 else 0.0
+
+
+def _var_float(values: pd.Series) -> float:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    return float(values.var(ddof=1)) if len(values) > 1 else 0.0
+
+
 def _leave_one_group_report(
     pairs: pd.DataFrame,
     embeddings: pd.DataFrame,
@@ -1448,6 +1615,7 @@ def _model_card_markdown(card: dict[str, object]) -> str:
         f"- Negative ratio: `{card['negative_ratio']}`",
         f"- Easy negative fraction: `{card.get('easy_negative_fraction', 0.0)}`",
         f"- Excluded homology radius: `{card.get('excluded_homology_radius', '')}`",
+        f"- Negative repeats: `{card.get('negative_repeats', 1)}`",
         f"- Validation splits requested: {', '.join(card['validation_splits'])}",
         f"- Random split PR-AUC: {card['metrics']['pr_auc']:.4f}",
         f"- Species included: {', '.join(card.get('species_included', [])) or 'not recorded'}",
@@ -1486,6 +1654,20 @@ def _model_card_markdown(card: dict[str, object]) -> str:
                 f"- Homology exclusion: `{sampling.get('excluded_homology_radius', '')}`",
             ]
         )
+    repeat_report = card.get("negative_repeat_report", {})
+    if isinstance(repeat_report, dict) and repeat_report.get("status") == "ok":
+        lines.extend(["", "## Negative Sampling Repeat Variance", ""])
+        for split, item in repeat_report.get("summary", {}).items():
+            if not isinstance(item, dict) or item.get("n_usable_repeats", 0) == 0:
+                continue
+            lines.append(
+                "- `{split}`: {n} usable repeats, PR-AUC {mean:.4f} +/- {std:.4f}".format(
+                    split=split,
+                    n=item.get("n_usable_repeats", 0),
+                    mean=float(item.get("pr_auc_mean", float("nan"))),
+                    std=float(item.get("pr_auc_std", float("nan"))),
+                )
+            )
     embedding_model = card.get("embedding_model", {})
     if isinstance(embedding_model, dict):
         lines.extend(

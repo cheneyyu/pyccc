@@ -148,6 +148,7 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
         model="sklearn",
         output_dir=tmp_path,
         negative_ratio=1,
+        negative_repeats=2,
         validation_splits=["leave_species_out", "leave_resource_out", "leave_family_out", "leave_clade_out"],
     )
     scores = pc.score_lr_candidates(pd.DataFrame({"ligand_gene": ["L1"], "receptor_gene": ["R1"]}), embeddings, model=tmp_path)
@@ -161,6 +162,10 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["metrics"]["n_negative"] > 0
     assert card["negative_sampling"]["negative_strategy"] == "pu_degree_matched"
     assert card["negative_sampling"]["excluded_homology_radius"] == "family_pair"
+    assert card["negative_repeats"] == 2
+    assert card["negative_repeat_report"]["status"] == "ok"
+    assert card["negative_repeat_report"]["summary"]["random_stratified"]["n_usable_repeats"] == 2
+    assert "pr_auc_std" in card["negative_repeat_report"]["summary"]["random_stratified"]
     assert card["species_included"] == ["toy_a", "toy_b"]
     assert card["training_resources"] == ["fixture_a", "fixture_b"]
     assert card["embedding_model"]["model_name"] == ["biohub/ESMC-300M"]

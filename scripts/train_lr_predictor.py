@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--negative-ratio", type=int, default=5)
     parser.add_argument("--easy-negative-fraction", type=float, default=0.05)
     parser.add_argument("--excluded-homology-radius", default="family_pair", choices=["family_pair", "none"])
+    parser.add_argument("--negative-repeats", type=int, default=3)
     args = parser.parse_args()
     train = pd.read_csv(args.training_lr, sep="\t")
     embeddings = pd.read_csv(args.embeddings, sep="\t")
@@ -31,6 +32,7 @@ def main() -> None:
         negative_ratio=args.negative_ratio,
         easy_negative_fraction=args.easy_negative_fraction,
         excluded_homology_radius=args.excluded_homology_radius,
+        negative_repeats=args.negative_repeats,
     )
 
 

@@ -64,7 +64,8 @@ uv run --extra predict python scripts/train_lr_predictor.py \
   --density-groupby clade \
   --negative-ratio 5 \
   --easy-negative-fraction 0.05 \
-  --excluded-homology-radius family_pair
+  --excluded-homology-radius family_pair \
+  --negative-repeats 3
 ```
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
@@ -94,6 +95,9 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - PU pseudo-negative sampling metadata, including positives/negatives by
   species, degree matching, the easy-negative count, and family-pair homology
   exclusion when ligand/receptor family or homology-cluster labels are present.
+- repeated PU negative-sampling validation summaries, including PR-AUC/ROC-AUC
+  mean, standard deviation, and variance by split when `--negative-repeats` is
+  greater than one.
 - `density_prior.tsv`, computed from curated positive LR rows by `clade` by
   default, for target-species thresholding.
 
