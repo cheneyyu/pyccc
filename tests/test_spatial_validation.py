@@ -31,6 +31,10 @@ def test_spatial_validation_reports_null_statistics():
     assert not report.celltype_pair_summary.empty
     assert not report.distance_decay.empty
     assert not report.section_reproducibility.empty
+    assert report.top_k_enrichment is not None
+    assert not report.top_k_enrichment.empty
+    assert {"k", "score_type", "observed_mean", "top_k_enrichment_z", "top_k_empirical_pvalue"}.issubset(report.top_k_enrichment.columns)
+    assert set(report.top_k_enrichment["k"]) == {100, 500, 1000}
     assert set(report.null_distribution["null_model"]) == {"coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"}
     assert {"ligand", "receptor", "kernel", "score_type", "score_value"}.issubset(report.null_distribution.columns)
     assert {"spatial_ccc_score", "model_weighted_spatial_ccc_score"}.issubset(set(report.null_distribution["score_type"]))
@@ -44,3 +48,4 @@ def test_spatial_validation_reports_null_statistics():
     assert {"n_sections", "top_k_section_fraction", "median_section_rank"}.issubset(report.section_reproducibility.columns)
     assert report.section_reproducibility["n_sections"].max() == 2
     assert report.metadata["section_key"] == "section"
+    assert report.metadata["top_k"] == [100, 500, 1000]

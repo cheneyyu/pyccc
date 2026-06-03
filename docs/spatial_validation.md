@@ -22,6 +22,7 @@ report = pc.validate_spatial_lr_table(
     sigma="auto",
     n_permutations=1000,
     section_key="section_id",
+    top_k=(100, 500, 1000),
 )
 ```
 
@@ -32,6 +33,8 @@ The report contains:
 - `null_distribution`: permutation scores,
 - `distance_decay`: distance-bin metadata,
 - `section_reproducibility`: optional cross-section reproducibility summaries,
+- `top_k_enrichment`: top predicted LR-pair enrichment summaries for each
+  kernel, score type, and requested K,
 - `metadata`: radius, sigma, null model, and permutation settings.
 
 Supported kernels:
@@ -56,6 +59,9 @@ reports distance-bin summaries with `mean_spatial_ccc_score` for each LR pair.
 For matched-random nulls, the original LR pair remains the statistical key and
 the sampled genes are recorded in `matched_ligand` and `matched_receptor`
 alongside expression, role-score, and degree match deltas.
+`top_k_enrichment` ranks predicted LR pairs by `model_score` when available,
+then reports the observed top-K mean score, null mean/SD, z-score, and
+empirical p-value for K values such as 100, 500, and 1000.
 
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the

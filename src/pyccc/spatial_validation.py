@@ -21,6 +21,7 @@ class SpatialValidationReport:
     distance_decay: pd.DataFrame
     section_reproducibility: pd.DataFrame
     metadata: dict[str, object]
+    top_k_enrichment: pd.DataFrame | None = None
 
 
 def validate_spatial_lr_table(
@@ -39,6 +40,7 @@ def validate_spatial_lr_table(
     gene_symbols_key: str | None = None,
     section_key: str | None = None,
     section_top_k: int = 100,
+    top_k: Sequence[int] = (100, 500, 1000),
 ) -> SpatialValidationReport:
     """Validate candidate LR scores against simple spatial null models."""
 
@@ -66,6 +68,7 @@ def validate_spatial_lr_table(
     summary = _lr_summary(observed, lr)
     null = _null_distribution(lr, adata, coords, groups, gene_names, expr_means, gene_expression, radius_value, sigma_value, distance_kernels, null_models, n_permutations, random_state)
     summary = _attach_null_stats(summary, null)
+    top_k_enrichment = _top_k_enrichment(summary, null, top_k_values=top_k)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
     section_reproducibility = _section_reproducibility(
         adata,
@@ -87,8 +90,9 @@ def validate_spatial_lr_table(
         "n_permutations": n_permutations,
         "section_key": section_key,
         "section_top_k": int(section_top_k),
+        "top_k": [int(k) for k in top_k],
     }
-    return SpatialValidationReport(summary, observed, null, distance_decay, section_reproducibility, metadata)
+    return SpatialValidationReport(summary, observed, null, distance_decay, section_reproducibility, metadata, top_k_enrichment=top_k_enrichment)
 
 
 def _gene_names(adata, *, gene_symbols_key: str | None) -> pd.Index:
@@ -457,6 +461,76 @@ def _attach_one_null_stat(
         out.at[idx, z_col] = 0.0 if std == 0 else (observed - mean) / std
         out.at[idx, p_col] = (np.sum(values >= observed) + 1) / (len(values) + 1)
     return out
+
+
+def _top_k_enrichment(summary: pd.DataFrame, null: pd.DataFrame, *, top_k_values: Sequence[int]) -> pd.DataFrame:
+    columns = [
+        "kernel",
+        "score_type",
+        "k",
+        "n_pairs",
+        "observed_mean",
+        "null_mean",
+        "null_sd",
+        "top_k_enrichment_z",
+        "top_k_empirical_pvalue",
+    ]
+    if summary.empty:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    for kernel, kernel_summary in summary.groupby("kernel", sort=False):
+        for score_col in ("spatial_ccc_score", "model_weighted_spatial_ccc_score"):
+            if score_col not in kernel_summary.columns:
+                continue
+            ranked = _rank_top_predicted_pairs(kernel_summary, score_col=score_col)
+            for k in top_k_values:
+                kk = min(max(int(k), 1), len(ranked))
+                top = ranked.head(kk)
+                observed = float(top[score_col].astype(float).mean())
+                null_values = _top_k_null_values(null, top, kernel=str(kernel), score_type=score_col)
+                null_mean = float(null_values.mean()) if len(null_values) else np.nan
+                null_sd = float(null_values.std(ddof=1)) if len(null_values) > 1 else 0.0
+                z = 0.0 if len(null_values) and null_sd == 0 else ((observed - null_mean) / null_sd if len(null_values) else np.nan)
+                pvalue = float((np.sum(null_values >= observed) + 1) / (len(null_values) + 1)) if len(null_values) else np.nan
+                rows.append(
+                    {
+                        "kernel": str(kernel),
+                        "score_type": score_col,
+                        "k": int(k),
+                        "n_pairs": int(kk),
+                        "observed_mean": observed,
+                        "null_mean": null_mean,
+                        "null_sd": null_sd,
+                        "top_k_enrichment_z": float(z),
+                        "top_k_empirical_pvalue": pvalue,
+                    }
+                )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _rank_top_predicted_pairs(summary: pd.DataFrame, *, score_col: str) -> pd.DataFrame:
+    if "model_score" in summary.columns:
+        return summary.sort_values(["model_score", score_col], ascending=[False, False])
+    if "density_rank" in summary.columns:
+        return summary.sort_values(["density_rank", score_col], ascending=[True, False])
+    return summary.sort_values(score_col, ascending=False)
+
+
+def _top_k_null_values(null: pd.DataFrame, top: pd.DataFrame, *, kernel: str, score_type: str) -> np.ndarray:
+    if null.empty:
+        return np.asarray([], dtype=float)
+    keys = top[["ligand", "receptor"]].drop_duplicates().copy()
+    sub = null[
+        (null["kernel"].astype(str) == str(kernel))
+        & (null["score_type"].astype(str) == str(score_type))
+    ].copy()
+    if sub.empty:
+        return np.asarray([], dtype=float)
+    sub = sub.merge(keys, on=["ligand", "receptor"], how="inner")
+    if sub.empty:
+        return np.asarray([], dtype=float)
+    values = sub.groupby(["null_model", "iteration"], sort=False)["score_value"].mean()
+    return values.astype(float).to_numpy()
 
 
 def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, expr_means: pd.DataFrame) -> pd.DataFrame:
