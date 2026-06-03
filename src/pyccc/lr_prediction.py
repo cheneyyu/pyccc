@@ -13,7 +13,7 @@ from .density import build_predicted_lr_table, estimate_lr_density_prior
 from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
 from .pair_features import make_lr_pair_features
 from .roles import predict_protein_roles
-from .sequence import load_cds_translations, load_protein_fasta
+from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes
 
 
 DBFREE_STACK_NAME = "esmc300m_lightgbm_clade_density_v0"
@@ -419,6 +419,8 @@ def predict_lr_dbfree(
         allow_fixture_models=allow_fixture_models,
     )
     proteins = load_cds_translations(cds_fasta) if cds_fasta is not None else load_protein_fasta(protein_fasta)
+    gene_match = match_expression_genes(adata, proteins, gene_id_key=gene_id_key)
+    gene_match_summary = _gene_match_summary(gene_match)
     emb = embed_proteins_esmc(
         proteins,
         model_name=embedding_model_name,
@@ -458,6 +460,8 @@ def predict_lr_dbfree(
         name=f"dbfree_predicted_{species_name}",
     )
     db.metadata["proteins"] = proteins
+    db.metadata["gene_match"] = gene_match
+    db.metadata["gene_match_summary"] = gene_match_summary
     db.metadata["embeddings"] = emb
     db.metadata["dbfree_model_stack"] = {
         "stack_name": DBFREE_STACK_NAME,
@@ -470,6 +474,7 @@ def predict_lr_dbfree(
         "density_prior": "auto_from_pair_model" if isinstance(density_prior, str) and density_prior == "auto" else "user_supplied",
         "density_groupby": "clade",
         "allow_fixture_models": bool(allow_fixture_models),
+        **gene_match_summary,
     }
     summary = db.metadata.get("prediction_summary")
     if isinstance(summary, pd.DataFrame) and not summary.empty:
@@ -482,14 +487,32 @@ def predict_lr_dbfree(
         summary["pair_model_name"] = pair_metadata["model_name"]
         summary["density_groupby"] = "clade"
         summary["allow_fixture_models"] = bool(allow_fixture_models)
+        for key, value in gene_match_summary.items():
+            summary[key] = value
     extra_warnings = []
     if str(role_model) == "heuristic":
         extra_warnings.append("heuristic_role_model")
     if resolved_embedding_backend == "hash":
         extra_warnings.append("hash_embedding_backend")
+    if gene_match_summary["n_expression_only_genes"] > 0:
+        extra_warnings.append("unmatched_expression_genes")
+    if gene_match_summary["n_protein_only_genes"] > 0:
+        extra_warnings.append("unmatched_protein_genes")
     if extra_warnings:
         _add_prediction_warnings(db, extra_warnings)
     return db
+
+
+def _gene_match_summary(gene_match: pd.DataFrame) -> dict[str, int]:
+    in_expression = gene_match["in_expression"].astype(bool)
+    in_proteins = gene_match["in_proteins"].astype(bool)
+    return {
+        "n_expression_genes": int(in_expression.sum()),
+        "n_protein_genes": int(in_proteins.sum()),
+        "n_matched_genes": int((in_expression & in_proteins).sum()),
+        "n_expression_only_genes": int((in_expression & ~in_proteins).sum()),
+        "n_protein_only_genes": int((~in_expression & in_proteins).sum()),
+    }
 
 
 def _write_density_prior(interactions: pd.DataFrame, output: Path, *, groupby: str) -> pd.DataFrame | None:

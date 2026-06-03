@@ -7,11 +7,17 @@ import pyccc as pc
 
 def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     fasta = tmp_path / "proteins.fa"
-    fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVVVVVVVVVVV\n>pX gene=X1\nMAAAAA\n", encoding="utf-8")
+    fasta.write_text(
+        ">pL gene=L1\nMCCCCCC\n"
+        ">pR gene=R1\nMAVVVVVVVVVVVVV\n"
+        ">pX gene=X1\nMAAAAA\n"
+        ">pY gene=Y1\nMYYYYY\n",
+        encoding="utf-8",
+    )
     adata = AnnData(
-        np.array([[4, 0, 1], [5, 0, 1], [0, 3, 1], [0, 4, 1]], dtype=float),
+        np.array([[4, 0, 1, 2], [5, 0, 1, 2], [0, 3, 1, 2], [0, 4, 1, 2]], dtype=float),
         obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"]}, index=[f"c{i}" for i in range(4)]),
-        var=pd.DataFrame({"gene_id": ["L1", "R1", "X1"]}, index=["L1", "R1", "X1"]),
+        var=pd.DataFrame({"gene_id": ["L1", "R1", "X1", "EONLY"]}, index=["L1", "R1", "X1", "EONLY"]),
     )
 
     predicted = pc.predict_lr_dbfree(
@@ -40,12 +46,25 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     assert "heuristic_pair_ranker" in warnings
     assert "heuristic_role_model" in warnings
     assert "hash_embedding_backend" in warnings
+    assert "unmatched_expression_genes" in warnings
+    assert "unmatched_protein_genes" in warnings
     assert "prediction_summary" in predicted.metadata
+    assert "gene_match" in predicted.metadata
+    assert predicted.metadata["gene_match_summary"] == {
+        "n_expression_genes": 4,
+        "n_protein_genes": 4,
+        "n_matched_genes": 3,
+        "n_expression_only_genes": 1,
+        "n_protein_only_genes": 1,
+    }
     assert predicted.metadata["dbfree_model_stack"]["allow_fixture_models"]
     assert predicted.metadata["dbfree_model_stack"]["embedding_backend"] == "hash"
     summary = predicted.metadata["prediction_summary"]
     assert summary.loc[0, "model_stack"] == pc.DBFREE_STACK_NAME
     assert "heuristic_role_model" in str(summary.loc[0, "warning"])
+    assert summary.loc[0, "n_matched_genes"] == 3
+    assert summary.loc[0, "n_expression_only_genes"] == 1
+    assert summary.loc[0, "n_protein_only_genes"] == 1
     assert summary.loc[0, "min_score"] == 0.0
     assert summary.loc[0, "max_pairs_per_ligand"] == 1
     assert summary.loc[0, "max_pairs_per_receptor"] == 1

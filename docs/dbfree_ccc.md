@@ -52,6 +52,12 @@ Protein FASTA is also supported:
 proteins = pc.load_protein_fasta("species.longest_protein.fa")
 ```
 
+`match_expression_genes(...)` reports both expression-only genes and
+protein-only genes without mutating `adata.var_names`. The end-to-end
+`predict_lr_dbfree(...)` wrapper stores the same match table in
+`predicted_db.metadata["gene_match"]` and adds match counts to
+`predicted_db.metadata["prediction_summary"]`.
+
 ## Embeddings and Roles
 
 ```python
@@ -200,6 +206,12 @@ silently; prediction is an explicit upstream step.
 `build_predicted_lr_table(...)`, including `min_score`, `max_pairs`,
 `max_pairs_per_ligand`, `max_pairs_per_receptor`, and
 `allow_low_score_density_fill`.
+
+The wrapper also records expression/protein ID coverage in metadata:
+`n_expression_genes`, `n_protein_genes`, `n_matched_genes`,
+`n_expression_only_genes`, and `n_protein_only_genes`. If either unmatched
+set is non-empty, the predicted LR table warning column records
+`unmatched_expression_genes` or `unmatched_protein_genes`.
 
 By default the wrapper assumes the production stack: ESMC-300M mean-pooled
 embeddings, a trained LightGBM protein role classifier, a trained LightGBM pair
