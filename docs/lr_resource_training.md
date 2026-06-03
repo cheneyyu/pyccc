@@ -87,3 +87,10 @@ gates = pc.evaluate_lr_model_quality_gates(
 print(gates)
 print(gates.attrs["passed"])
 ```
+
+For a generated predicted LR table, check density calibration separately:
+
+```python
+density_gates = pc.evaluate_predicted_lr_density_prior(predicted_db, max_fold_error=2.0)
+print(density_gates.attrs["passed"])
+```

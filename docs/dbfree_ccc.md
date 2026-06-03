@@ -128,7 +128,20 @@ predicted_db = pc.build_predicted_lr_table(
 
 The output is a normal `CellChatDB` object. It includes `model_score`,
 `calibrated_probability`, `density_prior`, `density_rank`, confidence,
-provenance columns, and prediction summary metadata.
+provenance columns, and prediction summary metadata. The summary also records
+the target pair count, capped target count, achieved density, density delta, and
+density ratio.
+
+Check whether the selected table remains close to the prior:
+
+```python
+density_gates = pc.evaluate_predicted_lr_density_prior(
+    predicted_db,
+    max_fold_error=2.0,
+)
+print(density_gates)
+print(density_gates.attrs["passed"])
+```
 
 ## End-to-End Wrapper
 

@@ -28,4 +28,15 @@ def test_density_prior_and_predicted_lr_table_metadata():
 
     assert db.interactions["evidence_type"].eq("embedding_link_prediction").all()
     assert "prediction_summary" in db.metadata
-    assert db.metadata["prediction_summary"].loc[0, "selected_pair_count"] == db.interactions.shape[0]
+    summary = db.metadata["prediction_summary"]
+    assert summary.loc[0, "selected_pair_count"] == db.interactions.shape[0]
+    assert summary.loc[0, "candidate_grid_size"] == 9
+    assert summary.loc[0, "target_pair_count"] == 7
+    assert summary.loc[0, "achieved_density"] == summary.loc[0, "selected_pair_count"] / 9
+
+    gates = pc.evaluate_predicted_lr_density_prior(db, max_fold_error=10.0)
+    assert gates.attrs["passed"]
+    assert {"density_prior", "achieved_density", "density_fold_error", "passed"}.issubset(gates.columns)
+
+    strict_gates = pc.evaluate_predicted_lr_density_prior(summary.assign(achieved_density=0.01), max_abs_delta=0.001, max_fold_error=1.1)
+    assert not strict_gates.attrs["passed"]

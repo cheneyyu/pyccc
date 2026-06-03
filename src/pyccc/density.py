@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Sequence
+import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -87,7 +88,9 @@ def build_predicted_lr_table(
     ligand_count = pairs["ligand_gene"].nunique()
     receptor_count = pairs["receptor_gene"].nunique()
     candidate_pair_count = len(pairs)
-    k_target = int(round(rho * max(ligand_count * receptor_count, 1)))
+    candidate_grid_size = max(ligand_count * receptor_count, 1)
+    raw_target_pair_count = int(round(rho * candidate_grid_size))
+    k_target = raw_target_pair_count
     k_target = min(max_pairs, max(k_target, 1 if (pairs["model_score"] >= min_score).any() else 0))
     eligible = pairs.copy() if allow_low_score_density_fill else pairs[pairs["model_score"] >= min_score].copy()
     eligible = eligible.sort_values("model_score", ascending=False)
@@ -147,7 +150,13 @@ def build_predicted_lr_table(
                 "candidate_ligand_count": ligand_count,
                 "candidate_receptor_count": receptor_count,
                 "candidate_pair_count": candidate_pair_count,
+                "candidate_grid_size": candidate_grid_size,
+                "target_pair_count": raw_target_pair_count,
+                "capped_target_pair_count": k_target,
                 "selected_pair_count": len(out),
+                "achieved_density": float(len(out) / candidate_grid_size),
+                "density_delta": float(len(out) / candidate_grid_size - rho),
+                "density_ratio": float((len(out) / candidate_grid_size) / rho) if rho > 0 else np.nan,
                 "score_threshold": float(out["model_score"].min()),
                 "min_score": min_score,
                 "max_pairs": max_pairs,
@@ -160,6 +169,52 @@ def build_predicted_lr_table(
     return CellChatDB(out, name=name, metadata=metadata)
 
 
+def evaluate_predicted_lr_density_prior(
+    predicted_db: CellChatDB | pd.DataFrame | dict[str, object] | str | Path,
+    *,
+    max_abs_delta: float | None = None,
+    max_fold_error: float = 2.0,
+) -> pd.DataFrame:
+    """Evaluate whether a predicted LR table stays close to its density prior."""
+
+    summary = _prediction_summary_frame(predicted_db)
+    rows = []
+    for idx, row in summary.iterrows():
+        prior = float(row.get("density_prior", np.nan))
+        achieved = float(row.get("achieved_density", np.nan))
+        if pd.isna(achieved) and pd.notna(prior):
+            grid = float(row.get("candidate_grid_size", row.get("candidate_ligand_count", 0) * row.get("candidate_receptor_count", 0)))
+            selected = float(row.get("selected_pair_count", np.nan))
+            achieved = selected / grid if grid > 0 else np.nan
+        delta = achieved - prior if pd.notna(achieved) and pd.notna(prior) else np.nan
+        ratio = achieved / prior if pd.notna(achieved) and pd.notna(prior) and prior > 0 else np.nan
+        fold_error = max(ratio, 1.0 / ratio) if pd.notna(ratio) and ratio > 0 else np.nan
+        abs_delta_limit = float(max_abs_delta) if max_abs_delta is not None else max(0.01, prior * 0.5) if pd.notna(prior) else np.nan
+        delta_pass = bool(pd.notna(delta) and abs(delta) <= abs_delta_limit)
+        fold_pass = bool(pd.notna(fold_error) and fold_error <= max_fold_error)
+        passed = delta_pass or fold_pass
+        rows.append(
+            {
+                "row": int(idx),
+                "density_prior": prior,
+                "achieved_density": achieved,
+                "density_delta": delta,
+                "density_ratio": ratio,
+                "density_fold_error": fold_error,
+                "max_abs_delta": abs_delta_limit,
+                "max_fold_error": float(max_fold_error),
+                "candidate_ligand_count": int(row.get("candidate_ligand_count", 0)),
+                "candidate_receptor_count": int(row.get("candidate_receptor_count", 0)),
+                "selected_pair_count": int(row.get("selected_pair_count", 0)),
+                "passed": passed,
+                "reason": "ok" if passed else "density outside prior tolerance",
+            }
+        )
+    out = pd.DataFrame(rows)
+    out.attrs["passed"] = bool(out["passed"].all()) if not out.empty else False
+    return out
+
+
 def _summary(values: np.ndarray, *, stat: str) -> float:
     if stat == "median":
         return float(np.median(values))
@@ -170,6 +225,29 @@ def _summary(values: np.ndarray, *, stat: str) -> float:
             values = np.sort(values)[1:-1]
         return float(np.median(values))
     raise ValueError("`stat` must be one of: median, mean, trimmed_median.")
+
+
+def _prediction_summary_frame(predicted_db: CellChatDB | pd.DataFrame | dict[str, object] | str | Path) -> pd.DataFrame:
+    if isinstance(predicted_db, CellChatDB):
+        if "prediction_summary" not in predicted_db.metadata:
+            raise ValueError("CellChatDB metadata does not contain `prediction_summary`.")
+        return predicted_db.metadata["prediction_summary"].copy()
+    if isinstance(predicted_db, pd.DataFrame):
+        return predicted_db.copy()
+    if isinstance(predicted_db, dict):
+        if "prediction_summary" in predicted_db:
+            value = predicted_db["prediction_summary"]
+            if isinstance(value, pd.DataFrame):
+                return value.copy()
+            return pd.DataFrame(value if isinstance(value, list) else [value])
+        return pd.DataFrame([predicted_db])
+    path = Path(predicted_db)
+    if path.suffix == ".json":
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(value, dict) and "prediction_summary" in value:
+            value = value["prediction_summary"]
+        return pd.DataFrame(value if isinstance(value, list) else [value])
+    return pd.read_csv(path, sep="\t")
 
 
 def _canonical_scores(scored_pairs: pd.DataFrame) -> pd.DataFrame:

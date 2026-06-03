@@ -3,7 +3,7 @@
 from .analysis import CCCResult, compute_communication, compute_pathway_communication, identify_overexpressed_genes, identify_overexpressed_interactions
 from .cellchat_bridge import export_cellchat, export_cellchat_merged
 from .database import CellChatDB, filter_lr_table, load_cellchatdb, load_lr_table, load_omnipath_interactions, toy_lr_table
-from .density import build_predicted_lr_table, estimate_lr_density_prior
+from .density import build_predicted_lr_table, estimate_lr_density_prior, evaluate_predicted_lr_density_prior
 from .diff import DifferentialCCC, compare_communication, compare_samples, pairwise_pathway_embedding, rank_pathway_similarity, signaling_changes
 from .embeddings import embed_proteins_esmc
 from .expression import signaling_expression_frame, signaling_expression_values
@@ -44,6 +44,7 @@ __all__ = [
     "from_liana_results",
     "embed_proteins_esmc",
     "estimate_lr_density_prior",
+    "evaluate_predicted_lr_density_prior",
     "evaluate_lr_model_quality_gates",
     "generate_lr_candidates_dbfree",
     "identify_overexpressed_genes",

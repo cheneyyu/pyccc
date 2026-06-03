@@ -55,3 +55,7 @@ Generated cards also record:
 Use `pc.evaluate_lr_model_quality_gates(...)` to turn the model card into a
 check table. It reports model PR-AUC, baseline PR-AUC, optional top-K precision
 deltas, pass/fail, and the reason for every requested split/baseline pair.
+After building a predicted LR table, use
+`pc.evaluate_predicted_lr_density_prior(...)` to check whether the selected edge
+density remains close to the clade-aware prior recorded in the prediction
+summary.
