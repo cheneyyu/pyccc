@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--section", action="append", default=[], help="Section name to download. May be repeated.")
     parser.add_argument("--smoke-only", action="store_true", help="Download only sections marked smoke=true.")
     parser.add_argument("--dry-run", action="store_true", help="Write the manifest table without downloading files.")
+    parser.add_argument("--force", action="store_true", help="Re-download files even when the local file already exists.")
     args = parser.parse_args()
 
     manifest = load_manifest(args.manifest)
@@ -37,10 +38,11 @@ def main() -> None:
     results_dir = manifest_results_dir(manifest, args.results_dir)
     rows = []
     for section in selected_sections(manifest, section_names=args.section, smoke_only=args.smoke_only):
-        rows.append(_download_section(manifest, section, data_dir=data_dir, dry_run=args.dry_run))
+        rows.append(_download_section(manifest, section, data_dir=data_dir, dry_run=args.dry_run, force=args.force))
 
     out = pd.DataFrame(rows)
-    write_tsv(out, results_dir.parent / "download_manifest.tsv")
+    combined = _append_download_manifest(results_dir.parent / "download_manifest.tsv", out)
+    write_tsv(combined, results_dir.parent / "download_manifest.tsv")
     write_tsv(out, results_dir / "download_manifest.tsv")
 
 
@@ -50,6 +52,7 @@ def _download_section(
     *,
     data_dir: Path,
     dry_run: bool,
+    force: bool,
 ) -> dict[str, object]:
     url = str(section.get("h5ad_url") or section.get("url") or "")
     if not url:
@@ -62,7 +65,8 @@ def _download_section(
     actual_bytes = 0
     checksum = ""
     if not dry_run:
-        _download_url(url, local_path)
+        if force or not local_path.exists():
+            _download_url(url, local_path)
         actual_bytes = local_path.stat().st_size
         checksum = sha256_file(local_path)
         status = "ok" if size_ratio_ok(actual_bytes, expected_bytes) else "size_mismatch"
@@ -92,6 +96,18 @@ def _download_url(url: str, output: Path) -> None:
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _append_download_manifest(path: Path, new_rows: pd.DataFrame) -> pd.DataFrame:
+    if path.exists():
+        old = pd.read_csv(path, sep="\t")
+        combined = pd.concat([old, new_rows], ignore_index=True)
+    else:
+        combined = new_rows.copy()
+    keys = [col for col in ("dataset", "section_id", "source_url") if col in combined.columns]
+    if keys:
+        combined = combined.drop_duplicates(keys, keep="last")
+    return combined.sort_values([col for col in ("dataset", "section_id") if col in combined.columns]).reset_index(drop=True)
 
 
 if __name__ == "__main__":
