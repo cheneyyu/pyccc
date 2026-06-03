@@ -32,3 +32,9 @@ Before advertising a DB-free predictor beyond demos, require leave-species-out
 performance above expression/role-only baselines, top-K precision above
 density-matched random controls, and honest calibration or rank-threshold
 reporting.
+
+Current generated cards include a machine-readable `validation_report` with a
+random stratified split plus leakage-aware leave-species, leave-resource, and
+leave-family folds when those metadata are available. Leave-clade folds are
+also reported when a `clade` column is present and the split is requested.
+Unusable folds are kept in the report with a skip reason.

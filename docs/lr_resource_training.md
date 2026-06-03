@@ -51,3 +51,15 @@ uv run --extra predict python scripts/train_lr_predictor.py \
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
 should use the ESMC backend from the `predict` extra.
+
+The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
+
+- a random stratified split,
+- leave-species-out folds when multiple species are present,
+- leave-resource-out folds when multiple resources are present,
+- leave-family-out folds when ligand/receptor family labels are present,
+- leave-clade-out folds when a `clade` column is present and requested,
+- PR-AUC, ROC-AUC, and top-K precision at K = 100, 500, 1000, and 5000.
+
+Folds that cannot contain both positive and pseudo-negative labels are reported
+as skipped instead of silently inflating the validation result.

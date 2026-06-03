@@ -91,7 +91,6 @@ def train_lr_link_predictor(
 
     from joblib import dump
     from sklearn.metrics import average_precision_score, roc_auc_score
-    from sklearn.model_selection import train_test_split
 
     interactions = getattr(training_table, "interactions", training_table)
     pairs = _training_pairs(interactions, negative_ratio=negative_ratio, random_state=random_state)
@@ -99,12 +98,7 @@ def train_lr_link_predictor(
     y = pairs["label"].astype(int).to_numpy()
     if len(np.unique(y)) < 2:
         raise ValueError("Training requires at least one positive and one pseudo-negative pair.")
-    idx = np.arange(len(y))
-    n_classes = len(np.unique(y))
-    test_size = max(n_classes, int(np.ceil(len(y) * 0.25)))
-    if len(y) - test_size < n_classes:
-        test_size = n_classes
-    train_idx, test_idx = train_test_split(idx, test_size=test_size, random_state=random_state, stratify=y)
+    train_idx, test_idx = _random_train_test_indices(y, random_state=random_state)
     clf = _fit_pair_model(model, features.X[train_idx], y[train_idx], random_state=random_state)
     scores = _predict_scores(clf, features.X[test_idx])
     metrics = {
@@ -114,6 +108,14 @@ def train_lr_link_predictor(
         "n_positive": int(y.sum()),
         "negative_strategy": negative_strategy,
     }
+    validation_report = _validation_report(
+        pairs,
+        features.X,
+        y,
+        requested_splits=validation_splits,
+        model=model,
+        random_state=random_state,
+    )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     dump({"model": clf, "pca_model": features.pca_model, "feature_encoder": feature_encoder, "feature_names": features.feature_names}, output / "lr_link_model.joblib")
@@ -122,7 +124,9 @@ def train_lr_link_predictor(
         "feature_encoder": feature_encoder,
         "validation_splits": list(validation_splits),
         "metrics": metrics,
+        "validation_report": validation_report,
         "negative_strategy": negative_strategy,
+        "negative_ratio": negative_ratio,
         "output_dir": str(output),
     }
     (output / "model_card.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
@@ -233,27 +237,233 @@ def _training_pairs(interactions: pd.DataFrame, *, negative_ratio: int, random_s
         positives = interactions[interactions["is_positive_label"].astype(bool)].copy()
     else:
         positives = interactions.copy()
-    positives = positives[["species", "ligand_gene", "receptor_gene"]].drop_duplicates()
+    positives = _positive_pair_metadata(positives)
     positives["label"] = 1
     rng = np.random.default_rng(random_state)
     negatives = []
-    for species, sub in positives.groupby("species", sort=False):
-        ligands = sub["ligand_gene"].astype(str).unique()
-        receptors = sub["receptor_gene"].astype(str).unique()
-        positive_set = set(zip(sub["ligand_gene"].astype(str), sub["receptor_gene"].astype(str)))
+    positive_set_by_species = {
+        species: set(zip(sub["ligand_gene"].astype(str), sub["receptor_gene"].astype(str)))
+        for species, sub in positives.groupby("species", sort=False)
+    }
+    for (species, resource), sub in positives.groupby(["species", "resource"], sort=False):
+        species_sub = positives[positives["species"].astype(str) == str(species)]
+        ligands, ligand_p = _degree_pool(species_sub["ligand_gene"])
+        receptors, receptor_p = _degree_pool(species_sub["receptor_gene"])
+        positive_set = positive_set_by_species[str(species)]
         target = len(sub) * negative_ratio
         species_negatives = []
         tries = 0
         while len(species_negatives) < target and tries < target * 20 + 100:
             tries += 1
-            lig = str(rng.choice(ligands))
-            rec = str(rng.choice(receptors))
+            lig = str(rng.choice(ligands, p=ligand_p))
+            rec = str(rng.choice(receptors, p=receptor_p))
             if lig == rec or (lig, rec) in positive_set:
                 continue
-            species_negatives.append({"species": species, "ligand_gene": lig, "receptor_gene": rec, "label": 0})
+            species_negatives.append(
+                {
+                    "species": str(species),
+                    "clade": str(sub["clade"].iloc[0]) if "clade" in sub.columns else "",
+                    "resource": str(resource),
+                    "ligand_gene": lig,
+                    "receptor_gene": rec,
+                    "ligand_family": _family_for_gene(species_sub, "ligand", lig),
+                    "receptor_family": _family_for_gene(species_sub, "receptor", rec),
+                    "label": 0,
+                    "negative_strategy": "pu_degree_matched",
+                    "negative_seed": int(random_state),
+                }
+            )
         negatives.extend(species_negatives)
     pairs = pd.concat([positives, pd.DataFrame(negatives)], ignore_index=True)
     return pairs.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
+
+
+def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
+    out = interactions.copy()
+    for col, default in {"species": "unknown_species", "resource": "unknown_resource"}.items():
+        if col not in out.columns:
+            out[col] = default
+    if "clade" not in out.columns:
+        out["clade"] = ""
+    family_aliases = {
+        "ligand_family": ("ligand_family", "ligand_protein_family", "ligand_homology_cluster", "homology_cluster"),
+        "receptor_family": ("receptor_family", "receptor_protein_family", "receptor_homology_cluster", "homology_cluster"),
+    }
+    for canonical, aliases in family_aliases.items():
+        if canonical not in out.columns:
+            for alias in aliases:
+                if alias in out.columns:
+                    out[canonical] = out[alias]
+                    break
+        if canonical not in out.columns:
+            out[canonical] = ""
+    cols = ["species", "clade", "resource", "ligand_gene", "receptor_gene", "ligand_family", "receptor_family"]
+    out = out[cols].drop_duplicates().copy()
+    for col in cols:
+        out[col] = out[col].fillna("").astype(str)
+    return out
+
+
+def _degree_pool(values: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+    counts = values.astype(str).value_counts()
+    genes = counts.index.to_numpy(dtype=str)
+    weights = counts.to_numpy(dtype=float)
+    weights = weights / weights.sum()
+    return genes, weights
+
+
+def _family_for_gene(frame: pd.DataFrame, side: str, gene: str) -> str:
+    gene_col = f"{side}_gene"
+    family_col = f"{side}_family"
+    if family_col not in frame.columns:
+        return ""
+    sub = frame[frame[gene_col].astype(str) == str(gene)]
+    if sub.empty:
+        return ""
+    values = [str(value) for value in sub[family_col].astype(str) if str(value)]
+    return values[0] if values else ""
+
+
+def _random_train_test_indices(y: np.ndarray, *, random_state: int) -> tuple[np.ndarray, np.ndarray]:
+    from sklearn.model_selection import train_test_split
+
+    idx = np.arange(len(y))
+    n_classes = len(np.unique(y))
+    test_size = max(n_classes, int(np.ceil(len(y) * 0.25)))
+    if len(y) - test_size < n_classes:
+        test_size = n_classes
+    return train_test_split(idx, test_size=test_size, random_state=random_state, stratify=y)
+
+
+def _validation_report(
+    pairs: pd.DataFrame,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    requested_splits: Sequence[str],
+    model: str,
+    random_state: int,
+) -> dict[str, object]:
+    report: dict[str, object] = {}
+    train_idx, test_idx = _random_train_test_indices(y, random_state=random_state)
+    report["random_stratified"] = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+    for split in requested_splits:
+        if split == "leave_species_out":
+            report[split] = _leave_one_group_report(pairs, X, y, group_col="species", model=model, random_state=random_state)
+        elif split == "leave_resource_out":
+            report[split] = _leave_one_group_report(pairs, X, y, group_col="resource", model=model, random_state=random_state)
+        elif split == "leave_family_out":
+            report[split] = _leave_family_report(pairs, X, y, model=model, random_state=random_state)
+        elif split == "leave_clade_out":
+            if "clade" in pairs.columns:
+                report[split] = _leave_one_group_report(pairs, X, y, group_col="clade", model=model, random_state=random_state)
+            else:
+                report[split] = {"status": "skipped", "reason": "Pair table has no `clade` column."}
+        else:
+            report[split] = {"status": "skipped", "reason": f"Unknown validation split `{split}`."}
+    return report
+
+
+def _leave_one_group_report(
+    pairs: pd.DataFrame,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    group_col: str,
+    model: str,
+    random_state: int,
+) -> dict[str, object]:
+    if group_col not in pairs.columns:
+        return {"status": "skipped", "reason": f"Pair table has no `{group_col}` column."}
+    folds = []
+    for group in sorted(set(pairs[group_col].astype(str))):
+        test_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() == str(group))
+        train_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() != str(group))
+        fold = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+        fold["held_out"] = str(group)
+        folds.append(fold)
+    usable = [fold for fold in folds if fold["status"] == "ok"]
+    return {"status": "ok" if usable else "skipped", "folds": folds, "summary": _fold_summary(usable)}
+
+
+def _leave_family_report(
+    pairs: pd.DataFrame,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    model: str,
+    random_state: int,
+) -> dict[str, object]:
+    if "ligand_family" not in pairs.columns or "receptor_family" not in pairs.columns:
+        return {"status": "skipped", "reason": "Pair table has no ligand/receptor family columns."}
+    ligand_family = pairs["ligand_family"].fillna("").astype(str)
+    receptor_family = pairs["receptor_family"].fillna("").astype(str)
+    family = pd.Series(
+        [sorted({f"ligand:{lig}", f"receptor:{rec}"} - {"ligand:", "receptor:"}) for lig, rec in zip(ligand_family, receptor_family, strict=True)],
+        index=pairs.index,
+    )
+    valid = family.map(bool)
+    if not valid.any():
+        return {"status": "skipped", "reason": "No non-empty family labels are available."}
+    folds = []
+    groups = sorted({item for values in family[valid] for item in values})
+    for group in groups:
+        mask = family.map(lambda values: group in values).to_numpy(dtype=bool)
+        test_idx = np.flatnonzero(mask)
+        train_idx = np.flatnonzero(~mask)
+        fold = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+        fold["held_out"] = str(group)
+        folds.append(fold)
+    usable = [fold for fold in folds if fold["status"] == "ok"]
+    return {"status": "ok" if usable else "skipped", "folds": folds, "summary": _fold_summary(usable)}
+
+
+def _evaluate_split(
+    X: np.ndarray,
+    y: np.ndarray,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    *,
+    model: str,
+    random_state: int,
+) -> dict[str, object]:
+    from sklearn.metrics import average_precision_score, roc_auc_score
+
+    if len(train_idx) == 0 or len(test_idx) == 0:
+        return {"status": "skipped", "reason": "Empty train or test split.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
+    y_train = y[train_idx]
+    y_test = y[test_idx]
+    if len(np.unique(y_train)) < 2:
+        return {"status": "skipped", "reason": "Training split has fewer than two classes.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
+    if len(np.unique(y_test)) < 2:
+        return {"status": "skipped", "reason": "Test split has fewer than two classes.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
+    clf = _fit_pair_model(model, X[train_idx], y_train, random_state=random_state)
+    scores = _predict_scores(clf, X[test_idx])
+    return {
+        "status": "ok",
+        "n_train": int(len(train_idx)),
+        "n_test": int(len(test_idx)),
+        "n_train_positive": int(y_train.sum()),
+        "n_test_positive": int(y_test.sum()),
+        "pr_auc": float(average_precision_score(y_test, scores)),
+        "roc_auc": _safe_roc_auc(y_test, scores, roc_auc_score),
+        "top_k_precision": _top_k_precision(y_test, scores, ks=(100, 500, 1000, 5000)),
+    }
+
+
+def _top_k_precision(y_true: np.ndarray, scores: np.ndarray, *, ks: Sequence[int]) -> dict[str, float]:
+    order = np.argsort(-scores)
+    return {f"top_{k}": float(y_true[order[: min(k, len(order))]].mean()) if len(order) else float("nan") for k in ks}
+
+
+def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
+    if not folds:
+        return {"n_usable_folds": 0}
+    return {
+        "n_usable_folds": len(folds),
+        "mean_pr_auc": float(np.mean([float(fold["pr_auc"]) for fold in folds])),
+        "mean_roc_auc": float(np.mean([float(fold["roc_auc"]) for fold in folds])),
+    }
 
 
 def _fit_pair_model(model: str, X: np.ndarray, y: np.ndarray, *, random_state: int):
@@ -311,16 +521,39 @@ def _heuristic_pair_scores(pairs: pd.DataFrame, embeddings: pd.DataFrame) -> np.
 
 
 def _model_card_markdown(card: dict[str, object]) -> str:
-    return "\n".join(
+    lines = [
+        "# pyccc LR Link Predictor Model Card",
+        "",
+        f"- Model type: `{card['model_type']}`",
+        f"- Feature encoder: `{card['feature_encoder']}`",
+        f"- Negative strategy: `{card['negative_strategy']}`",
+        f"- Negative ratio: `{card['negative_ratio']}`",
+        f"- Validation splits requested: {', '.join(card['validation_splits'])}",
+        f"- Random split PR-AUC: {card['metrics']['pr_auc']:.4f}",
+        "",
+        "## Validation Summary",
+        "",
+    ]
+    for name, item in card.get("validation_report", {}).items():
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") == "ok" and "summary" in item:
+            summary = item["summary"]
+            lines.append(f"- `{name}`: {summary.get('n_usable_folds', 0)} usable folds, mean PR-AUC {float(summary.get('mean_pr_auc', float('nan'))):.4f}")
+        elif item.get("status") == "ok":
+            lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}")
+        else:
+            lines.append(f"- `{name}`: skipped ({item.get('reason', 'no usable folds')})")
+    lines.extend(
         [
-            "# pyccc LR Link Predictor Model Card",
             "",
-            f"- Model type: `{card['model_type']}`",
-            f"- Feature encoder: `{card['feature_encoder']}`",
-            f"- Negative strategy: `{card['negative_strategy']}`",
-            f"- Validation splits requested: {', '.join(card['validation_splits'])}",
-            f"- PR-AUC: {card['metrics']['pr_auc']:.4f}",
+            "## Intended Use",
             "",
-            "This model predicts candidate ligand-receptor pairs from protein embeddings. It is not biochemical validation.",
+            "This model predicts candidate ligand-receptor pairs from protein embeddings for downstream pyccc scoring.",
+            "",
+            "## Caveat",
+            "",
+            "Predicted pairs are computational candidates and are not biochemical validation.",
         ]
     )
+    return "\n".join(lines)

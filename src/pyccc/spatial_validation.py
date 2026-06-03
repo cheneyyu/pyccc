@@ -55,10 +55,11 @@ def validate_spatial_lr_table(
     radius_value = _resolve_radius(coords, adata, radius)
     sigma_value = _resolve_sigma(coords, sigma, fallback=radius_value)
     expr_means = _group_expression_means(adata, groups, gene_names, sorted(set(lr["ligand"]).union(set(lr["receptor"]))))
+    gene_expression = _gene_expression_means(adata, gene_names)
     weight_tables = _spatial_weight_tables(coords, groups, radius=radius_value, sigma=sigma_value, kernels=distance_kernels)
     observed = _score_lr_spatial(lr, expr_means, weight_tables)
     summary = _lr_summary(observed, lr)
-    null = _null_distribution(lr, adata, coords, groups, gene_names, expr_means, radius_value, sigma_value, distance_kernels, null_models, n_permutations, random_state)
+    null = _null_distribution(lr, adata, coords, groups, gene_names, expr_means, gene_expression, radius_value, sigma_value, distance_kernels, null_models, n_permutations, random_state)
     summary = _attach_null_stats(summary, null)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
     metadata = {"mode": mode, "radius": radius_value, "sigma": sigma_value, "null_models": list(null_models), "n_permutations": n_permutations}
@@ -111,6 +112,12 @@ def _group_expression_means(adata, groups: np.ndarray, gene_names: pd.Index, gen
     return pd.DataFrame(rows).fillna(0.0)
 
 
+def _gene_expression_means(adata, gene_names: pd.Index) -> pd.Series:
+    x = adata.X
+    values = np.asarray(x.mean(axis=0)).ravel() if sparse.issparse(x) else np.asarray(x).mean(axis=0)
+    return pd.Series(values.astype(float), index=gene_names.astype(str))
+
+
 def _spatial_weight_tables(coords: np.ndarray, groups: np.ndarray, *, radius: float, sigma: float, kernels: Sequence[str]) -> dict[str, pd.DataFrame]:
     dist = cdist(coords[:, :2], coords[:, :2])
     tables = {}
@@ -138,10 +145,12 @@ def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables:
         for lr_row in lr.itertuples(index=False):
             ligand = str(lr_row.ligand)
             receptor = str(lr_row.receptor)
+            model_score = float(getattr(lr_row, "model_score", 1.0))
             for weight_row in weights.itertuples(index=False):
                 source_expr = float(expr_means.loc[str(weight_row.source), ligand])
                 target_expr = float(expr_means.loc[str(weight_row.target), receptor])
                 expression_score = source_expr * target_expr
+                spatial_score = expression_score * float(weight_row.spatial_weight)
                 rows.append(
                     {
                         "ligand": ligand,
@@ -151,14 +160,20 @@ def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables:
                         "kernel": kernel,
                         "expression_score": expression_score,
                         "spatial_weight": float(weight_row.spatial_weight),
-                        "spatial_ccc_score": expression_score * float(weight_row.spatial_weight),
+                        "spatial_ccc_score": spatial_score,
+                        "model_score": model_score,
+                        "model_weighted_spatial_ccc_score": spatial_score * model_score,
                     }
                 )
     return pd.DataFrame(rows)
 
 
 def _lr_summary(observed: pd.DataFrame, lr: pd.DataFrame) -> pd.DataFrame:
-    summary = observed.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(spatial_ccc_score=("spatial_ccc_score", "mean"), max_spatial_ccc_score=("spatial_ccc_score", "max"))
+    summary = observed.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(
+        spatial_ccc_score=("spatial_ccc_score", "mean"),
+        max_spatial_ccc_score=("spatial_ccc_score", "max"),
+        model_weighted_spatial_ccc_score=("model_weighted_spatial_ccc_score", "mean"),
+    )
     score_cols = [col for col in ("model_score", "confidence", "density_rank") if col in lr.columns]
     if score_cols:
         summary = summary.merge(lr[["ligand", "receptor", *score_cols]].drop_duplicates(["ligand", "receptor"]), on=["ligand", "receptor"], how="left")
@@ -172,6 +187,7 @@ def _null_distribution(
     groups: np.ndarray,
     gene_names: pd.Index,
     expr_means: pd.DataFrame,
+    gene_expression: pd.Series,
     radius: float,
     sigma: float,
     kernels: Sequence[str],
@@ -194,39 +210,103 @@ def _null_distribution(
                 weights = _spatial_weight_tables(coords, perm_groups, radius=radius, sigma=sigma, kernels=kernels)
                 scored = _score_lr_spatial(lr, perm_means, weights)
             elif null_model == "matched_random_lr":
-                random_lr = _matched_random_lr(lr, gene_names, rng)
+                random_lr = _matched_random_lr(lr, gene_expression, rng)
                 scored = _score_lr_spatial(random_lr, expr_means, _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels))
             elif null_model == "score_permutation":
-                scored = _score_lr_spatial(lr.sample(frac=1.0, random_state=int(rng.integers(0, 1_000_000))), expr_means, _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels))
+                permuted = lr.copy()
+                if "model_score" in permuted.columns:
+                    permuted["model_score"] = rng.permutation(permuted["model_score"].to_numpy())
+                scored = _score_lr_spatial(permuted, expr_means, _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels))
             else:
                 raise ValueError(f"Unsupported null model: {null_model}")
-            grouped = scored.groupby("kernel", as_index=False)["spatial_ccc_score"].mean()
-            for row in grouped.itertuples(index=False):
-                rows.append({"iteration": i, "null_model": null_model, "kernel": row.kernel, "spatial_ccc_score": float(row.spatial_ccc_score)})
-    return pd.DataFrame(rows, columns=["iteration", "null_model", "kernel", "spatial_ccc_score"])
+            score_cols = ["spatial_ccc_score", "model_weighted_spatial_ccc_score"]
+            for score_col in score_cols:
+                grouped = scored.groupby(["ligand", "receptor", "kernel"], as_index=False)[score_col].mean()
+                for row in grouped.itertuples(index=False):
+                    rows.append(
+                        {
+                            "iteration": i,
+                            "null_model": null_model,
+                            "ligand": str(row.ligand),
+                            "receptor": str(row.receptor),
+                            "kernel": row.kernel,
+                            "score_type": score_col,
+                            "score_value": float(getattr(row, score_col)),
+                        }
+                    )
+    return pd.DataFrame(rows, columns=["iteration", "null_model", "ligand", "receptor", "kernel", "score_type", "score_value"])
 
 
-def _matched_random_lr(lr: pd.DataFrame, gene_names: pd.Index, rng: np.random.Generator) -> pd.DataFrame:
-    genes = np.asarray(gene_names.astype(str))
-    return pd.DataFrame({"ligand": rng.choice(genes, size=len(lr), replace=True), "receptor": rng.choice(genes, size=len(lr), replace=True)})
+def _matched_random_lr(lr: pd.DataFrame, gene_expression: pd.Series, rng: np.random.Generator) -> pd.DataFrame:
+    ranked = gene_expression.sort_values()
+    genes = ranked.index.astype(str).to_numpy()
+    quantiles = pd.qcut(ranked.rank(method="first"), q=min(10, len(ranked)), labels=False, duplicates="drop")
+    quantile_lookup = dict(zip(ranked.index.astype(str), quantiles.astype(int), strict=True))
+    rows = []
+    for row in lr.itertuples(index=False):
+        lig_q = quantile_lookup.get(str(row.ligand), int(rng.integers(0, max(1, int(quantiles.max()) + 1))))
+        rec_q = quantile_lookup.get(str(row.receptor), int(rng.integers(0, max(1, int(quantiles.max()) + 1))))
+        rows.append({"ligand": _sample_quantile_gene(genes, quantiles, lig_q, rng), "receptor": _sample_quantile_gene(genes, quantiles, rec_q, rng)})
+    return pd.DataFrame(rows)
+
+
+def _sample_quantile_gene(genes: np.ndarray, quantiles: pd.Series, quantile: int, rng: np.random.Generator) -> str:
+    candidates = genes[quantiles.to_numpy(dtype=int) == int(quantile)]
+    if len(candidates) == 0:
+        candidates = genes
+    return str(rng.choice(candidates))
 
 
 def _attach_null_stats(summary: pd.DataFrame, null: pd.DataFrame) -> pd.DataFrame:
     out = summary.copy()
     out["spatial_enrichment_z"] = np.nan
     out["empirical_pvalue"] = np.nan
+    out["model_weighted_spatial_enrichment_z"] = np.nan
+    out["model_weighted_empirical_pvalue"] = np.nan
     if null.empty:
         return out
-    null_by_kernel = {kernel: sub["spatial_ccc_score"].astype(float).to_numpy() for kernel, sub in null.groupby("kernel")}
+    out = _attach_one_null_stat(
+        out,
+        null[null["score_type"].astype(str) == "spatial_ccc_score"],
+        observed_col="spatial_ccc_score",
+        z_col="spatial_enrichment_z",
+        p_col="empirical_pvalue",
+    )
+    return _attach_one_null_stat(
+        out,
+        null[null["score_type"].astype(str) == "model_weighted_spatial_ccc_score"],
+        observed_col="model_weighted_spatial_ccc_score",
+        z_col="model_weighted_spatial_enrichment_z",
+        p_col="model_weighted_empirical_pvalue",
+    )
+
+
+def _attach_one_null_stat(
+    out: pd.DataFrame,
+    null: pd.DataFrame,
+    *,
+    observed_col: str,
+    z_col: str,
+    p_col: str,
+) -> pd.DataFrame:
+    if null.empty:
+        return out
+    null_by_key = {
+        key: sub["score_value"].astype(float).to_numpy()
+        for key, sub in null.groupby(["ligand", "receptor", "kernel"])
+    }
+    null_by_kernel = {kernel: sub["score_value"].astype(float).to_numpy() for kernel, sub in null.groupby("kernel")}
     for idx, row in out.iterrows():
-        values = null_by_kernel.get(row["kernel"], np.asarray([], dtype=float))
+        values = null_by_key.get((row["ligand"], row["receptor"], row["kernel"]), np.asarray([], dtype=float))
+        if len(values) == 0:
+            values = null_by_kernel.get(row["kernel"], np.asarray([], dtype=float))
         if len(values) == 0:
             continue
         mean = values.mean()
         std = values.std(ddof=1) if len(values) > 1 else 0.0
-        observed = float(row["spatial_ccc_score"])
-        out.at[idx, "spatial_enrichment_z"] = 0.0 if std == 0 else (observed - mean) / std
-        out.at[idx, "empirical_pvalue"] = (np.sum(values >= observed) + 1) / (len(values) + 1)
+        observed = float(row[observed_col])
+        out.at[idx, z_col] = 0.0 if std == 0 else (observed - mean) / std
+        out.at[idx, p_col] = (np.sum(values >= observed) + 1) / (len(values) + 1)
     return out
 
 
@@ -235,6 +315,26 @@ def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, ex
     bins = np.quantile(dist[np.isfinite(dist)], np.linspace(0, 1, 6))
     bins = np.unique(bins)
     rows = []
+    group_levels = sorted(set(groups))
     for left, right in zip(bins[:-1], bins[1:], strict=True):
-        rows.append({"distance_min": float(left), "distance_max": float(right), "mean_distance": float((left + right) / 2), "n_lr_pairs": int(len(lr))})
+        in_bin = (dist >= left) & (dist <= right)
+        for lr_row in lr.itertuples(index=False):
+            scores = []
+            for source in group_levels:
+                s_mask = groups == source
+                for target in group_levels:
+                    t_mask = groups == target
+                    spatial_weight = float(in_bin[np.ix_(s_mask, t_mask)].mean())
+                    expr_score = float(expr_means.loc[source, str(lr_row.ligand)] * expr_means.loc[target, str(lr_row.receptor)])
+                    scores.append(expr_score * spatial_weight)
+            rows.append(
+                {
+                    "ligand": str(lr_row.ligand),
+                    "receptor": str(lr_row.receptor),
+                    "distance_min": float(left),
+                    "distance_max": float(right),
+                    "mean_distance": float((left + right) / 2),
+                    "mean_spatial_ccc_score": float(np.mean(scores)) if scores else 0.0,
+                }
+            )
     return pd.DataFrame(rows)
