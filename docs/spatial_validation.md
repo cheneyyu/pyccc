@@ -92,6 +92,20 @@ cp.spatial_validation_distance_decay(report, top_n=8)
 the requested null models. `spatial_validation_distance_decay` shows binned
 spatial CCC scores over physical distance for the highest-scoring LR pairs.
 
+A runnable toy cellbin-style script writes the same report tables and plots:
+
+```bash
+uv run python examples/stereoseq_cellbin_spatial_validation.py \
+  --out-dir spatial_validation_example \
+  --n-permutations 10
+```
+
+The script writes `spatial_validation_summary.tsv`,
+`spatial_validation_null_distribution.tsv`,
+`spatial_validation_top_k_enrichment.tsv`,
+`spatial_validation_enrichment.png`, and
+`spatial_validation_distance_decay.png`.
+
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the
 median cell area; otherwise it uses the median nearest-neighbor distance.

@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -96,3 +100,35 @@ def test_celltype_null_permutation_can_be_section_stratified():
     for section in sorted(set(sections)):
         mask = sections == section
         assert sorted(permuted[mask].tolist()) == sorted(groups[mask].tolist())
+
+
+def test_stereoseq_cellbin_example_writes_report_and_plots(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    out_dir = tmp_path / "spatial_example"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(root / "examples" / "stereoseq_cellbin_spatial_validation.py"),
+            "--out-dir",
+            str(out_dir),
+            "--n-permutations",
+            "2",
+        ],
+        check=True,
+        cwd=root,
+    )
+
+    expected = [
+        "spatial_validation_summary.tsv",
+        "spatial_validation_celltype_pairs.tsv",
+        "spatial_validation_null_distribution.tsv",
+        "spatial_validation_distance_decay.tsv",
+        "spatial_validation_top_k_enrichment.tsv",
+        "spatial_validation_enrichment.png",
+        "spatial_validation_distance_decay.png",
+    ]
+    for name in expected:
+        path = out_dir / name
+        assert path.exists()
+        assert path.stat().st_size > 0
