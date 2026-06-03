@@ -38,8 +38,9 @@ def _fixture_training():
                 np.array([0.7, 0.1, 0.2], dtype=np.float32),
             ],
             "sequence_length": [100, 120, 130, 140, 300, 330, 340, 350],
-            "model_name": ["biohub/ESMC-300M"] * 8,
+            "model_name": [pc.ESMC_300M_MODEL_NAME] * 8,
             "model_revision": ["fixture-rev"] * 8,
+            "embedding_backend": ["esmc"] * 8,
             "pooling": ["mean"] * 8,
         }
     )
@@ -171,8 +172,9 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert "top_100" in card["negative_repeat_report"]["summary"]["random_stratified"]["top_k_enrichment_mean"]
     assert card["species_included"] == ["toy_a", "toy_b"]
     assert card["training_resources"] == ["fixture_a", "fixture_b"]
-    assert card["embedding_model"]["model_name"] == ["biohub/ESMC-300M"]
+    assert card["embedding_model"]["model_name"] == [pc.ESMC_300M_MODEL_NAME]
     assert card["embedding_model"]["model_revision"] == ["fixture-rev"]
+    assert card["embedding_model"]["embedding_backend"] == ["esmc"]
     assert card["embedding_model"]["pooling"] == ["mean"]
     assert card["pair_model_params"]["max_iter"] == 100
     assert card["final_model_training"] == "all_pairs_after_validation"

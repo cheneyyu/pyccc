@@ -28,6 +28,8 @@ def test_heuristic_and_trained_role_prediction(tmp_path):
     assert heuristic.loc[0, "ligand_like_score"] > 0
     assert card["model_type"] == "protein_role_classifier"
     assert card["classifier"] == "sklearn"
+    assert card["embedding_model"]["model_name"] == [pc.ESMC_300M_MODEL_NAME]
+    assert card["embedding_model"]["embedding_backend"] == ["hash"]
     assert (tmp_path / "model_card.md").exists()
     assert card["metrics"]["ligand_like"]["validation_status"] == "skipped"
     assert {"ligand_like_score", "receptor_like_score", "secreted_like_score", "membrane_like_score"}.issubset(trained.columns)

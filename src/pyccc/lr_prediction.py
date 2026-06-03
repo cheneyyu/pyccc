@@ -10,10 +10,15 @@ import pandas as pd
 from scipy import sparse
 
 from .density import build_predicted_lr_table, estimate_lr_density_prior
-from .embeddings import embed_proteins_esmc
+from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
 from .pair_features import make_lr_pair_features
 from .roles import predict_protein_roles
 from .sequence import load_cds_translations, load_protein_fasta
+
+
+DBFREE_STACK_NAME = "esmc300m_lightgbm_clade_density_v0"
+DEFAULT_DBFREE_ROLE_MODEL = "models/universal_esmc300m_role_v0"
+DEFAULT_DBFREE_PAIR_MODEL = "models/universal_esmc300m_lgbm_v0"
 
 
 def generate_lr_candidates_dbfree(
@@ -215,6 +220,8 @@ def train_lr_link_predictor(
     )
     density_prior = _write_density_prior(interactions, output, groupby=density_groupby)
     card = {
+        "model_name": output.name,
+        "model_stack": DBFREE_STACK_NAME if model == "lightgbm" else "fixture_or_baseline_pair_ranker",
         "model_type": model,
         "feature_encoder": feature_encoder,
         "density_prior_groupby": density_groupby,
@@ -382,8 +389,8 @@ def predict_lr_dbfree(
     gene_id_key: str | None = None,
     species_name: str = "target_species",
     species_hint: str = "unknown",
-    model: str | Path = "heuristic",
-    role_model: str | Path = "heuristic",
+    model: str | Path = DEFAULT_DBFREE_PAIR_MODEL,
+    role_model: str | Path = DEFAULT_DBFREE_ROLE_MODEL,
     density_prior: pd.DataFrame | float | str = "auto",
     min_score: float = 0.50,
     max_pairs: int = 50000,
@@ -392,6 +399,9 @@ def predict_lr_dbfree(
     allow_low_score_density_fill: bool = False,
     cache_dir: str | Path | None = None,
     embedding_backend: str = "auto",
+    embedding_model_name: str = ESMC_300M_MODEL_NAME,
+    embedding_model_revision: str | None = None,
+    allow_fixture_models: bool = False,
     ligand_candidates: str | Path | Sequence[str] | None = None,
     receptor_candidates: str | Path | Sequence[str] | None = None,
     **candidate_kwargs,
@@ -400,8 +410,22 @@ def predict_lr_dbfree(
 
     if (cds_fasta is None) == (protein_fasta is None):
         raise ValueError("Provide exactly one of `cds_fasta` or `protein_fasta`.")
+    _validate_dbfree_prediction_stack(
+        model=model,
+        role_model=role_model,
+        density_prior=density_prior,
+        embedding_backend=embedding_backend,
+        embedding_model_name=embedding_model_name,
+        allow_fixture_models=allow_fixture_models,
+    )
     proteins = load_cds_translations(cds_fasta) if cds_fasta is not None else load_protein_fasta(protein_fasta)
-    emb = embed_proteins_esmc(proteins, cache_dir=Path(cache_dir) / "esmc" if cache_dir is not None else None, backend=embedding_backend)
+    emb = embed_proteins_esmc(
+        proteins,
+        model_name=embedding_model_name,
+        model_revision=embedding_model_revision,
+        cache_dir=Path(cache_dir) / "esmc" if cache_dir is not None else None,
+        backend=embedding_backend,
+    )
     roles = predict_protein_roles(proteins, emb, model=role_model)
     candidates = generate_lr_candidates_dbfree(
         adata,
@@ -415,6 +439,8 @@ def predict_lr_dbfree(
     )
     scores = score_lr_candidates(candidates, emb, model=model)
     resolved_density_prior = _auto_density_prior(density_prior, model)
+    pair_metadata = _pair_model_metadata(model)
+    resolved_embedding_backend = "hash" if embedding_backend == "hash" or str(embedding_model_name) in {"hash", "fake"} else "esmc"
     db = build_predicted_lr_table(
         scores,
         roles=roles,
@@ -425,16 +451,41 @@ def predict_lr_dbfree(
         max_pairs_per_ligand=max_pairs_per_ligand,
         max_pairs_per_receptor=max_pairs_per_receptor,
         allow_low_score_density_fill=allow_low_score_density_fill,
-        model_name=str(model),
-        model_revision="",
+        model_name=pair_metadata["model_name"],
+        model_version=pair_metadata["model_version"],
+        model_revision=embedding_model_revision or pair_metadata["model_revision"],
+        feature_encoder=pair_metadata["feature_encoder"],
         name=f"dbfree_predicted_{species_name}",
     )
     db.metadata["proteins"] = proteins
     db.metadata["embeddings"] = emb
+    db.metadata["dbfree_model_stack"] = {
+        "stack_name": DBFREE_STACK_NAME,
+        "embedding_model_name": embedding_model_name,
+        "embedding_model_revision": embedding_model_revision or "",
+        "embedding_backend": resolved_embedding_backend,
+        "role_model": str(role_model),
+        "pair_model": str(model),
+        "pair_model_name": pair_metadata["model_name"],
+        "density_prior": "auto_from_pair_model" if isinstance(density_prior, str) and density_prior == "auto" else "user_supplied",
+        "density_groupby": "clade",
+        "allow_fixture_models": bool(allow_fixture_models),
+    }
+    summary = db.metadata.get("prediction_summary")
+    if isinstance(summary, pd.DataFrame) and not summary.empty:
+        summary["model_stack"] = DBFREE_STACK_NAME
+        summary["embedding_model_name"] = embedding_model_name
+        summary["embedding_model_revision"] = embedding_model_revision or ""
+        summary["embedding_backend"] = db.metadata["dbfree_model_stack"]["embedding_backend"]
+        summary["role_model"] = str(role_model)
+        summary["pair_model"] = str(model)
+        summary["pair_model_name"] = pair_metadata["model_name"]
+        summary["density_groupby"] = "clade"
+        summary["allow_fixture_models"] = bool(allow_fixture_models)
     extra_warnings = []
     if str(role_model) == "heuristic":
         extra_warnings.append("heuristic_role_model")
-    if embedding_backend == "hash":
+    if resolved_embedding_backend == "hash":
         extra_warnings.append("hash_embedding_backend")
     if extra_warnings:
         _add_prediction_warnings(db, extra_warnings)
@@ -463,6 +514,84 @@ def _auto_density_prior(density_prior: pd.DataFrame | float | str, model: str | 
     if table_path.exists():
         return pd.read_csv(table_path, sep="\t")
     return density_prior
+
+
+def _validate_dbfree_prediction_stack(
+    *,
+    model: str | Path,
+    role_model: str | Path,
+    density_prior: pd.DataFrame | float | str,
+    embedding_backend: str,
+    embedding_model_name: str,
+    allow_fixture_models: bool,
+) -> None:
+    if allow_fixture_models:
+        return
+
+    problems = []
+    missing_paths = []
+    model_name_lower = str(embedding_model_name).lower()
+    if embedding_backend == "hash" or str(embedding_model_name) in {"hash", "fake"}:
+        problems.append("production DB-free prediction requires ESMC-300M embeddings, not the hash fixture backend")
+    if not ("esmc" in model_name_lower and "300m" in model_name_lower):
+        problems.append(f"production DB-free prediction expects an ESMC-300M model name, got `{embedding_model_name}`")
+    if str(role_model) == "heuristic":
+        problems.append("production DB-free prediction requires a trained LightGBM protein role classifier")
+    else:
+        role_path = Path(role_model)
+        if not (role_path / "role_model.joblib").exists():
+            missing_paths.append(f"LightGBM protein role classifier: {role_path / 'role_model.joblib'}")
+    if str(model) == "heuristic":
+        problems.append("production DB-free prediction requires a trained LightGBM pair ranker")
+    else:
+        pair_path = Path(model)
+        if not (pair_path / "lr_link_model.joblib").exists():
+            missing_paths.append(f"LightGBM pair ranker: {pair_path / 'lr_link_model.joblib'}")
+        if isinstance(density_prior, str) and density_prior == "auto" and not (pair_path / "density_prior.tsv").exists():
+            missing_paths.append(f"clade-aware density prior: {pair_path / 'density_prior.tsv'}")
+    if isinstance(density_prior, (float, int)):
+        problems.append("production DB-free prediction requires a clade-aware density table or `density_prior='auto'`, not a scalar prior")
+    elif isinstance(density_prior, str) and density_prior != "auto":
+        problems.append("production DB-free prediction requires a clade-aware density table or `density_prior='auto'`, not a scalar string prior")
+    elif isinstance(density_prior, pd.DataFrame) and not ({"clade", "species_hint"} & set(density_prior.columns)):
+        problems.append("production DB-free prediction density table must contain `clade` or `species_hint`")
+
+    if problems:
+        raise ValueError("; ".join(problems) + ". Pass `allow_fixture_models=True` only for tests or dry runs.")
+    if missing_paths:
+        raise FileNotFoundError(
+            "Production DB-free prediction needs the ESMC-300M + LightGBM stack files. Missing: "
+            + "; ".join(missing_paths)
+            + ". Train them first or pass explicit paths."
+        )
+
+
+def _pair_model_metadata(model: str | Path) -> dict[str, str]:
+    if str(model) == "heuristic":
+        return {
+            "model_name": "heuristic_fixture",
+            "model_version": "0",
+            "model_revision": "",
+            "feature_encoder": "heuristic",
+        }
+    path = Path(model)
+    card_path = path / "model_card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8")) if card_path.exists() else {}
+    embedding_model = card.get("embedding_model", {}) if isinstance(card.get("embedding_model"), dict) else {}
+    return {
+        "model_name": str(card.get("model_name") or path.name or DEFAULT_DBFREE_PAIR_MODEL),
+        "model_version": str(card.get("model_version") or card.get("version") or "0"),
+        "model_revision": _first_metadata_value(embedding_model.get("model_revision")),
+        "feature_encoder": str(card.get("feature_encoder") or "pca128_absdiff_hadamard_v1"),
+    }
+
+
+def _first_metadata_value(value) -> str:
+    if isinstance(value, list):
+        return str(value[0]) if value else ""
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _reference_annotation_payload(
@@ -1012,6 +1141,7 @@ def _training_metadata(interactions: pd.DataFrame, embeddings: pd.DataFrame, pai
         "embedding_model": {
             "model_name": _sorted_strings(embeddings.get("model_name", pd.Series(dtype=str))),
             "model_revision": _sorted_strings(embeddings.get("model_revision", pd.Series(dtype=str))),
+            "embedding_backend": _sorted_strings(embeddings.get("embedding_backend", pd.Series(dtype=str))),
             "pooling": _sorted_strings(embeddings.get("pooling", pd.Series(dtype=str))),
             "n_embeddings": int(len(embeddings)),
         },
@@ -1862,6 +1992,7 @@ def _model_card_markdown(card: dict[str, object]) -> str:
                 "",
                 f"- Embedding model: {', '.join(embedding_model.get('model_name', [])) or 'not recorded'}",
                 f"- Embedding revision: {', '.join(embedding_model.get('model_revision', [])) or 'not recorded'}",
+                f"- Embedding backend: {', '.join(embedding_model.get('embedding_backend', [])) or 'not recorded'}",
                 f"- Embedding pooling: {', '.join(embedding_model.get('pooling', [])) or 'not recorded'}",
                 f"- Embeddings: {embedding_model.get('n_embeddings', 0)}",
                 f"- Pair model parameters: `{json.dumps(card.get('pair_model_params', {}), sort_keys=True)}`",

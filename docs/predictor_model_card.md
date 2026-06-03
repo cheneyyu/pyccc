@@ -4,7 +4,7 @@ Each trained LR predictor should write `model_card.json` and `model_card.md`.
 The model card must include:
 
 - model name, version, and revision,
-- ESMC model name and revision,
+- ESMC model name, revision, backend, and pooling,
 - training resources and dates,
 - species and clades included,
 - positive label rules,
@@ -51,10 +51,10 @@ leave-family folds when those metadata are available. Leave-clade folds are
 also reported when a `clade` column is present and the split is requested.
 Unusable folds are kept in the report with a skip reason.
 
-Role classifier cards include one-vs-rest counts, role prevalence, stratified
-holdout PR-AUC/ROC-AUC/top-K precision when enough labels are available, and a
-prevalence PR-AUC baseline. Small or single-class roles are explicitly marked
-as skipped.
+Role classifier cards include one-vs-rest counts, role prevalence, ESMC
+embedding model/backend metadata, stratified holdout PR-AUC/ROC-AUC/top-K
+precision when enough labels are available, and a prevalence PR-AUC baseline.
+Small or single-class roles are explicitly marked as skipped.
 
 Generated cards also record:
 
@@ -62,7 +62,8 @@ Generated cards also record:
 - `validation_feature_encoder_fit = train_split_only`,
 - training resources, species/clades included, positive-label and
   pseudo-negative counts by species,
-- ESMC embedding model name/revision/pooling and final pair-model parameters,
+- ESMC embedding model name/revision/backend/pooling and final pair-model
+  parameters,
 - calibration method and calibration metrics,
 - Brier score and 10-bin expected calibration error when calibration is usable.
 - baseline PR-AUC and top-K ranker comparisons for degree prior, embedding

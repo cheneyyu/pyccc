@@ -19,6 +19,8 @@ def test_hash_embeddings_are_cached_and_pair_features_are_deterministic(tmp_path
     features_a = pc.make_lr_pair_features(pairs, first)
     features_b = pc.make_lr_pair_features(pairs, second)
 
+    assert first.loc[0, "model_name"] == pc.ESMC_300M_MODEL_NAME
+    assert first["embedding_backend"].eq("hash").all()
     np.testing.assert_allclose(first.loc[0, "embedding"], second.loc[0, "embedding"])
     np.testing.assert_allclose(features_a.X, features_b.X)
     assert "cosine" in features_a.feature_names

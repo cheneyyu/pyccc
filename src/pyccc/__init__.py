@@ -5,10 +5,10 @@ from .cellchat_bridge import export_cellchat, export_cellchat_merged
 from .database import CellChatDB, filter_lr_table, load_cellchatdb, load_lr_table, load_omnipath_interactions, toy_lr_table
 from .density import build_predicted_lr_table, estimate_lr_density_prior, evaluate_predicted_lr_density_prior
 from .diff import DifferentialCCC, compare_communication, compare_samples, pairwise_pathway_embedding, rank_pathway_similarity, signaling_changes
-from .embeddings import embed_proteins_esmc
+from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
 from .expression import signaling_expression_frame, signaling_expression_values
 from .liana_bridge import from_liana_results, run_liana
-from .lr_prediction import evaluate_lr_model_quality_gates, generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
+from .lr_prediction import DBFREE_STACK_NAME, DEFAULT_DBFREE_PAIR_MODEL, DEFAULT_DBFREE_ROLE_MODEL, evaluate_lr_model_quality_gates, generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
 from .lr_resources import load_training_lr_resources, training_lr_to_cellchatdb
 from .patterns import CommunicationPatterns, communication_pattern_matrix, compute_communication_patterns, compute_pathway_clusters, compute_pathway_embedding, compute_pathway_similarity, select_communication_pattern_number
 from .pair_features import LRPairFeatures, make_lr_pair_features
@@ -24,6 +24,10 @@ __all__ = [
     "CellChatDB",
     "CommunicationPatterns",
     "DifferentialCCC",
+    "DBFREE_STACK_NAME",
+    "DEFAULT_DBFREE_PAIR_MODEL",
+    "DEFAULT_DBFREE_ROLE_MODEL",
+    "ESMC_300M_MODEL_NAME",
     "LRPairFeatures",
     "LRTrainingTable",
     "SpatialValidationReport",

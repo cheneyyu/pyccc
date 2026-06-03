@@ -59,10 +59,13 @@ def train_protein_role_classifier(
     output.mkdir(parents=True, exist_ok=True)
     dump({"models": models, "roles": list(roles), "model": model, "embedding_genes": proteins["gene_id"].astype(str).tolist()}, output / "role_model.joblib")
     card = {
+        "model_name": output.name,
+        "model_stack": "esmc300m_lightgbm_clade_density_v0" if model == "lightgbm" else "fixture_or_baseline_role_classifier",
         "model_type": "protein_role_classifier",
         "classifier": model,
         "roles": list(roles),
         "n_training_proteins": int(len(proteins)),
+        "embedding_model": _embedding_metadata(embeddings),
         "validation_method": "stratified_holdout",
         "validation_fraction": float(validation_fraction),
         "metrics": metrics,
@@ -145,6 +148,22 @@ def _constant_role_metrics(y: np.ndarray) -> dict[str, object]:
     }
 
 
+def _embedding_metadata(embeddings: pd.DataFrame) -> dict[str, object]:
+    return {
+        "model_name": _sorted_strings(embeddings.get("model_name", pd.Series(dtype=str))),
+        "model_revision": _sorted_strings(embeddings.get("model_revision", pd.Series(dtype=str))),
+        "embedding_backend": _sorted_strings(embeddings.get("embedding_backend", pd.Series(dtype=str))),
+        "pooling": _sorted_strings(embeddings.get("pooling", pd.Series(dtype=str))),
+        "n_embeddings": int(len(embeddings)),
+    }
+
+
+def _sorted_strings(values: pd.Series) -> list[str]:
+    if values.empty:
+        return []
+    return sorted({str(value) for value in values.dropna().astype(str) if str(value)})
+
+
 def _evaluate_role_holdout(
     model: str,
     X: np.ndarray,
@@ -218,12 +237,25 @@ def _role_model_card_markdown(card: dict[str, object]) -> str:
         f"- classifier: `{card.get('classifier', '')}`",
         f"- training proteins: {card.get('n_training_proteins', 0)}",
         f"- validation method: {card.get('validation_method', '')}",
-        "",
-        "## Role Metrics",
-        "",
-        "| role | positives | negatives | PR-AUC | baseline PR-AUC | delta | status |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
+    embedding_model = card.get("embedding_model", {})
+    if isinstance(embedding_model, dict):
+        lines.extend(
+            [
+                f"- embedding model: {', '.join(embedding_model.get('model_name', [])) or 'not recorded'}",
+                f"- embedding backend: {', '.join(embedding_model.get('embedding_backend', [])) or 'not recorded'}",
+                f"- embedding pooling: {', '.join(embedding_model.get('pooling', [])) or 'not recorded'}",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Role Metrics",
+            "",
+            "| role | positives | negatives | PR-AUC | baseline PR-AUC | delta | status |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
     if isinstance(metrics, dict):
         for role, item in metrics.items():
             if not isinstance(item, dict):

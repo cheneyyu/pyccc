@@ -28,6 +28,7 @@ def main() -> None:
             model="heuristic",
             role_model="heuristic",
             embedding_backend="hash",
+            allow_fixture_models=True,
             density_prior=1.0,
             expression_min_fraction=0.0,
             max_pairs=3,

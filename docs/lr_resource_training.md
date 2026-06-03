@@ -44,10 +44,12 @@ uv run python scripts/build_lr_training_table.py \
   --protein-fasta human=human.longest_protein.fa \
   --output-dir data/lr_training
 
-uv run python scripts/embed_proteome_esmc.py \
+uv run --extra predict python scripts/embed_proteome_esmc.py \
   --protein-table data/lr_training/training_proteins.tsv \
   --output data/lr_training/training_embeddings.tsv \
-  --backend hash
+  --backend esmc \
+  --model-name biohub/esmc-300m-2024-12 \
+  --cache-dir .pyccc-cache/esmc
 
 uv run --extra predict python scripts/train_role_classifier.py \
   --training-lr data/lr_training/training_interactions.tsv \
@@ -69,7 +71,7 @@ uv run --extra predict python scripts/train_lr_predictor.py \
 ```
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
-should use the ESMC backend from the `predict` extra.
+should use the ESMC-300M backend from the `predict` extra.
 
 The role classifier trainer writes `model_card.json` and `model_card.md` with
 one-vs-rest positive/negative counts, prevalence, stratified holdout PR-AUC,
@@ -93,8 +95,8 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - ligand/receptor-family failure case summaries for held-out folds when
   family or homology-cluster labels are present.
 - model-stack metadata: training resources, species/clades included, positive
-  and pseudo-negative counts by species, embedding model name/revision/pooling,
-  and the serialized pair-model parameters.
+  and pseudo-negative counts by species, embedding model name/revision/backend/
+  pooling, and the serialized pair-model parameters.
 - PU pseudo-negative sampling metadata, including positives/negatives by
   species, degree matching, the easy-negative count, and family-pair homology
   exclusion when ligand/receptor family or homology-cluster labels are present.

@@ -211,7 +211,7 @@ For every protein sequence, compute one ESMC-300M embedding. Use mean pooling ov
 ```python
 emb = pc.embed_proteins_esmc(
     proteins,
-    model_name="biohub/ESMC-300M",
+    model_name="biohub/esmc-300m-2024-12",
     batch_size=8,
     device="auto",
     pooling="mean",
@@ -503,7 +503,7 @@ train = pc.build_lr_training_table(
 ```python
 emb = pc.embed_proteins_esmc(
     train.proteins,
-    model_name="biohub/ESMC-300M",
+    model_name="biohub/esmc-300m-2024-12",
     pooling="mean",
     cache_dir=".pyccc-cache/esmc",
 )
@@ -857,7 +857,7 @@ Required APIs:
 ```python
 emb = pc.embed_proteins_esmc(
     proteins,
-    model_name="biohub/ESMC-300M",
+    model_name="biohub/esmc-300m-2024-12",
     pooling="mean",
     cache_dir=".pyccc-cache/esmc",
 )
@@ -875,7 +875,8 @@ Acceptance criteria:
 
 - tests use tiny fake embeddings,
 - no Hugging Face download in default CI,
-- embedding cache keys include sequence hash and model revision,
+- embedding cache keys include sequence hash, model name, model revision,
+  pooling, and backend,
 - pair features are deterministic.
 
 ### Milestone 4 — Role classifier

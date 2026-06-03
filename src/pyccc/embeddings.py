@@ -9,10 +9,13 @@ import numpy as np
 import pandas as pd
 
 
+ESMC_300M_MODEL_NAME = "biohub/esmc-300m-2024-12"
+
+
 def embed_proteins_esmc(
     proteins: pd.DataFrame,
     *,
-    model_name: str = "biohub/ESMC-300M",
+    model_name: str = ESMC_300M_MODEL_NAME,
     batch_size: int = 8,
     device: str = "auto",
     pooling: str = "mean",
@@ -29,28 +32,31 @@ def embed_proteins_esmc(
     """
 
     _validate_protein_frame(proteins)
+    if backend not in {"auto", "esmc", "hash"}:
+        raise ValueError("`backend` must be one of: auto, esmc, hash.")
     if pooling != "mean":
         raise ValueError("Only mean pooling is supported.")
     cache_root = Path(cache_dir) if cache_dir is not None else None
     rows = []
+    resolved_backend = _resolve_embedding_backend(backend, model_name)
     for chunk in _chunks(proteins.reset_index(drop=True), batch_size):
         missing = []
         for row in chunk.itertuples(index=False):
             seq_hash = _sequence_hash(row.protein_sequence)
-            cached = _read_cached_embedding(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling)
+            cached = _read_cached_embedding(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=resolved_backend)
             if cached is None:
                 missing.append(row)
             else:
-                rows.append(_embedding_row(row, seq_hash, cached, model_name=model_name, model_revision=model_revision, pooling=pooling))
+                rows.append(_embedding_row(row, seq_hash, cached, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=resolved_backend))
         if missing:
-            if backend == "hash" or model_name in {"hash", "fake"}:
+            if resolved_backend == "hash":
                 embeddings = [_hash_embedding(row.protein_sequence, dim=fake_dim) for row in missing]
             else:
                 embeddings = _embed_with_transformers(missing, model_name=model_name, model_revision=model_revision, device=device)
             for row, emb in zip(missing, embeddings, strict=True):
                 seq_hash = _sequence_hash(row.protein_sequence)
-                _write_cached_embedding(cache_root, seq_hash, emb, model_name=model_name, model_revision=model_revision, pooling=pooling)
-                rows.append(_embedding_row(row, seq_hash, emb, model_name=model_name, model_revision=model_revision, pooling=pooling))
+                _write_cached_embedding(cache_root, seq_hash, emb, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=resolved_backend)
+                rows.append(_embedding_row(row, seq_hash, emb, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=resolved_backend))
     return pd.DataFrame(rows)
 
 
@@ -70,30 +76,34 @@ def _sequence_hash(sequence: str) -> str:
     return hashlib.sha256(str(sequence).encode("utf-8")).hexdigest()
 
 
-def _cache_path(cache_root: Path | None, seq_hash: str, *, model_name: str, model_revision: str | None, pooling: str) -> Path | None:
+def _resolve_embedding_backend(backend: str, model_name: str) -> str:
+    return "hash" if backend == "hash" or model_name in {"hash", "fake"} else "esmc"
+
+
+def _cache_path(cache_root: Path | None, seq_hash: str, *, model_name: str, model_revision: str | None, pooling: str, backend: str) -> Path | None:
     if cache_root is None:
         return None
-    model_key = hashlib.sha1(f"{model_name}|{model_revision or ''}|{pooling}".encode("utf-8")).hexdigest()[:16]
+    model_key = hashlib.sha1(f"{model_name}|{model_revision or ''}|{pooling}|{backend}".encode("utf-8")).hexdigest()[:16]
     return cache_root / model_key / f"{seq_hash}.npz"
 
 
-def _read_cached_embedding(cache_root: Path | None, seq_hash: str, *, model_name: str, model_revision: str | None, pooling: str) -> np.ndarray | None:
-    path = _cache_path(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling)
+def _read_cached_embedding(cache_root: Path | None, seq_hash: str, *, model_name: str, model_revision: str | None, pooling: str, backend: str) -> np.ndarray | None:
+    path = _cache_path(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=backend)
     if path is None or not path.exists():
         return None
     return np.load(path)["embedding"]
 
 
-def _write_cached_embedding(cache_root: Path | None, seq_hash: str, embedding: np.ndarray, *, model_name: str, model_revision: str | None, pooling: str) -> None:
-    path = _cache_path(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling)
+def _write_cached_embedding(cache_root: Path | None, seq_hash: str, embedding: np.ndarray, *, model_name: str, model_revision: str | None, pooling: str, backend: str) -> None:
+    path = _cache_path(cache_root, seq_hash, model_name=model_name, model_revision=model_revision, pooling=pooling, backend=backend)
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    metadata = {"model_name": model_name, "model_revision": model_revision or "", "pooling": pooling, "sequence_hash": seq_hash}
+    metadata = {"model_name": model_name, "model_revision": model_revision or "", "pooling": pooling, "sequence_hash": seq_hash, "embedding_backend": backend}
     np.savez_compressed(path, embedding=np.asarray(embedding, dtype=np.float32), metadata=json.dumps(metadata))
 
 
-def _embedding_row(row, seq_hash: str, embedding: np.ndarray, *, model_name: str, model_revision: str | None, pooling: str) -> dict[str, object]:
+def _embedding_row(row, seq_hash: str, embedding: np.ndarray, *, model_name: str, model_revision: str | None, pooling: str, backend: str = "esmc") -> dict[str, object]:
     out = {
         "gene_id": str(row.gene_id),
         "protein_id": str(row.protein_id),
@@ -101,6 +111,7 @@ def _embedding_row(row, seq_hash: str, embedding: np.ndarray, *, model_name: str
         "embedding": np.asarray(embedding, dtype=np.float32),
         "model_name": model_name,
         "model_revision": model_revision or "",
+        "embedding_backend": backend,
         "pooling": pooling,
         "sequence_length": int(len(str(row.protein_sequence))),
     }

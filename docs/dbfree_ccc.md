@@ -57,7 +57,7 @@ proteins = pc.load_protein_fasta("species.longest_protein.fa")
 ```python
 emb = pc.embed_proteins_esmc(
     proteins,
-    model_name="biohub/ESMC-300M",
+    model_name=pc.ESMC_300M_MODEL_NAME,
     pooling="mean",
     cache_dir=".pyccc-cache/esmc",
 )
@@ -69,7 +69,8 @@ roles = pc.predict_protein_roles(
 )
 ```
 
-The cache key includes sequence hash, model name, model revision, and pooling.
+The cache key includes sequence hash, model name, model revision, pooling, and
+backend, so hash dry-run embeddings cannot overwrite real ESMC embeddings.
 
 ## Candidate Generation and Scoring
 
@@ -175,6 +176,7 @@ predicted_db = pc.predict_lr_dbfree(
     role_model="models/universal_esmc300m_role_v0",
     model="models/universal_esmc300m_lgbm_v0",
     density_prior="auto",
+    embedding_model_name=pc.ESMC_300M_MODEL_NAME,
     min_score=0.50,
     max_pairs=50000,
     max_pairs_per_ligand=200,
@@ -199,12 +201,20 @@ silently; prediction is an explicit upstream step.
 `max_pairs_per_ligand`, `max_pairs_per_receptor`, and
 `allow_low_score_density_fill`.
 
+By default the wrapper assumes the production stack: ESMC-300M mean-pooled
+embeddings, a trained LightGBM protein role classifier, a trained LightGBM pair
+ranker, and a clade-aware density prior. Fixture-only hash embeddings,
+heuristic role/ranker models, or scalar density priors require
+`allow_fixture_models=True`; use that only for tests or dry runs.
+
 With `density_prior="auto"`, `predict_lr_dbfree(...)` first looks for
 `density_prior.tsv` in the LR ranker model directory and uses the row matching
 `species_hint` by `clade` when available. If a density table exists but no row
 matches the target hint, pyccc falls back to the median prior across table rows
-and records `density_mode="table_fallback_median"`. If no trained-model prior
-is present, it falls back to a conservative default density.
+and records `density_mode="table_fallback_median"`. In production mode, a
+trained-model `density_prior.tsv` or explicit clade/species-hint density table
+is required. The conservative default density is only available when
+`allow_fixture_models=True`.
 
 ## Limitations
 
