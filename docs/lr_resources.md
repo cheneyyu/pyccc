@@ -65,7 +65,16 @@ All resources normalize to:
 
 pyccc also preserves provenance fields such as `pmid`, `source_url`,
 `curation_type`, `confidence_original`, `license`, `support_count`, and
-`support_resources` when available.
+`support_resources` when available. These can come from the resource spec or
+from columns in the local table, including common aliases such as `PMID`,
+`License`, `source_url`, `url`, `directed`, and `is_directed`.
+
+When the same species/ligand/receptor/pathway row appears in multiple
+resources, pyccc keeps one normalized row, records `support_count`, and
+semicolon-merges provenance fields such as `resource`, `support_resources`,
+`pmid`, `source_url`, `license`, and `evidence_type`. Explicitly undirected
+rows are rejected in strict mode because predictor training expects directed
+LR examples.
 
 Normalize from the command line:
 

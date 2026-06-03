@@ -34,8 +34,11 @@ def build_lr_training_table(
     if drop_complexes not in {"partial", "none"}:
         raise ValueError("`drop_complexes` must be one of: partial, none.")
     interactions = resources.copy() if isinstance(resources, pd.DataFrame) else load_training_lr_resources(resources)
-    positive_evidence = positive_evidence or {"curated_direct", "curated_inferred"}
-    interactions["is_positive_label"] = interactions["evidence_type"].isin(positive_evidence)
+    positive_evidence = set(positive_evidence or {"curated_direct", "curated_inferred"})
+    interactions["is_positive_label"] = [
+        bool(set(_split_semicolon_values(value)) & positive_evidence)
+        for value in interactions["evidence_type"]
+    ]
     proteins = _load_species_proteins(protein_fasta_by_species or {})
     if not proteins.empty:
         interactions = _attach_sequences(interactions, proteins)
@@ -76,10 +79,60 @@ def _attach_sequences(interactions: pd.DataFrame, proteins: pd.DataFrame) -> pd.
 
 def _drop_partial_complexes(interactions: pd.DataFrame) -> pd.DataFrame:
     out = interactions.copy()
-    complex_mask = out["ligand_gene"].astype(str).str.contains("_") | out["receptor_gene"].astype(str).str.contains("_")
+    for col in (
+        "ligand_sequence",
+        "receptor_sequence",
+        "ligand_complex_id",
+        "receptor_complex_id",
+        "complex_subunit_gene",
+        "complex_required_subunits",
+    ):
+        if col not in out.columns:
+            out[col] = ""
+    complex_mask = (
+        _complex_name_mask(out["ligand_gene"])
+        | _complex_name_mask(out["receptor_gene"])
+        | (out["ligand_complex_id"].astype(str).str.strip() != "")
+        | (out["receptor_complex_id"].astype(str).str.strip() != "")
+        | (out["complex_subunit_gene"].astype(str).str.strip() != "")
+        | (_required_subunit_count(out["complex_required_subunits"]) > 1)
+    )
+    incomplete_subunit_metadata = _required_subunit_count(out["complex_required_subunits"]) > _observed_subunit_count(out["complex_subunit_gene"])
     if "ligand_sequence" not in out.columns:
         out["ligand_sequence"] = ""
     if "receptor_sequence" not in out.columns:
         out["receptor_sequence"] = ""
     missing_sequence = (out["ligand_sequence"].astype(str) == "") | (out["receptor_sequence"].astype(str) == "")
-    return out[~(complex_mask & missing_sequence)].copy()
+    return out[~((complex_mask & missing_sequence) | incomplete_subunit_metadata)].copy()
+
+
+def _complex_name_mask(values: pd.Series) -> pd.Series:
+    return values.fillna("").astype(str).str.contains(r"[_|]", regex=True)
+
+
+def _required_subunit_count(values: pd.Series) -> pd.Series:
+    return values.map(_max_int_token).astype(int)
+
+
+def _observed_subunit_count(values: pd.Series) -> pd.Series:
+    return values.map(lambda value: len(_split_complex_subunits(value))).astype(int)
+
+
+def _max_int_token(value: object) -> int:
+    counts = []
+    for token in _split_semicolon_values(value):
+        try:
+            counts.append(int(float(token)))
+        except ValueError:
+            continue
+    return max(counts) if counts else 0
+
+
+def _split_complex_subunits(value: object) -> list[str]:
+    text = str(value).replace("|", ";").replace(",", ";")
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _split_semicolon_values(value: object) -> list[str]:
+    text = str(value).replace("|", ";")
+    return [part.strip() for part in text.split(";") if part.strip()]

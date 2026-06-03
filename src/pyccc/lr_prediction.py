@@ -1170,7 +1170,10 @@ def _training_metadata(interactions: pd.DataFrame, embeddings: pd.DataFrame, pai
 def _sorted_strings(values: pd.Series) -> list[str]:
     if values.empty:
         return []
-    return sorted({str(value) for value in values.dropna().astype(str) if str(value)})
+    parts = []
+    for value in values.dropna().astype(str):
+        parts.extend(_split_semicolon_parts(value))
+    return sorted(set(parts))
 
 
 def _count_by(frame: pd.DataFrame, column: str) -> dict[str, int]:
@@ -1232,8 +1235,12 @@ def _positive_resource_blacklist(frame: pd.DataFrame) -> str:
 def _join_semicolon_unique(values: pd.Series) -> str:
     parts = []
     for value in values.dropna().astype(str):
-        parts.extend(part for part in value.split(";") if part)
+        parts.extend(_split_semicolon_parts(value))
     return ";".join(sorted(set(parts)))
+
+
+def _split_semicolon_parts(value: object) -> list[str]:
+    return [part.strip() for part in str(value).replace("|", ";").split(";") if part.strip()]
 
 
 def _random_train_test_indices(y: np.ndarray, *, random_state: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1467,9 +1474,15 @@ def _leave_one_group_report(
     if group_col not in pairs.columns:
         return {"status": "skipped", "reason": f"Pair table has no `{group_col}` column."}
     folds = []
-    for group in sorted(set(pairs[group_col].astype(str))):
-        test_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() == str(group))
-        train_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() != str(group))
+    groups = _membership_groups(pairs[group_col]) if group_col == "resource" else sorted(set(pairs[group_col].astype(str)))
+    values = pairs[group_col].astype(str)
+    for group in groups:
+        if group_col == "resource":
+            membership = values.map(lambda value: group in _split_semicolon_parts(value)).to_numpy(dtype=bool)
+        else:
+            membership = values.to_numpy() == str(group)
+        test_idx = np.flatnonzero(membership)
+        train_idx = np.flatnonzero(~membership)
         fold = _evaluate_pair_split(pairs, embeddings, y, train_idx, test_idx, model=model, feature_encoder=feature_encoder, random_state=random_state)
         fold["held_out"] = str(group)
         if group_col == "resource":
@@ -1477,6 +1490,13 @@ def _leave_one_group_report(
         folds.append(fold)
     usable = [fold for fold in folds if fold["status"] == "ok"]
     return {"status": "ok" if usable else "skipped", "folds": folds, "summary": _fold_summary(usable)}
+
+
+def _membership_groups(values: pd.Series) -> list[str]:
+    groups = []
+    for value in values.dropna().astype(str):
+        groups.extend(_split_semicolon_parts(value))
+    return sorted(set(groups))
 
 
 def _leave_family_report(

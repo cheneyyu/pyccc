@@ -23,10 +23,13 @@ train = pc.build_lr_training_table(
 The first implementation is conservative:
 
 - direct curated and high-confidence inferred rows can be positive labels,
+- semicolon-merged evidence values such as `curated_direct;user_supplied`
+  remain positive if any component evidence class is positive,
 - orthology-transferred and ML-predicted rows remain explicitly marked and are
   not positives by default,
-- complex LR rows without matching sequence evidence are dropped when
-  `drop_complexes="partial"`,
+- complex LR rows without matching sequence evidence, or with incomplete
+  `complex_required_subunits` / `complex_subunit_gene` metadata, are dropped
+  when `drop_complexes="partial"`,
 - no downloaded databases, model weights, or embedding artifacts are committed.
 
 Training scripts accept normalized TSV files:

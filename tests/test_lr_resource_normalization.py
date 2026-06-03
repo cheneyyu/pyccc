@@ -53,12 +53,102 @@ def test_load_training_lr_resources_deduplicates_with_support_counts():
     assert normalized.loc[0, "support_resources"] == "A;B"
 
 
+def test_load_training_lr_resources_merges_duplicate_provenance_fields():
+    frame_a = pd.DataFrame(
+        [
+            {
+                "ligand_gene": "L1",
+                "receptor_gene": "R1",
+                "pathway": "P",
+                "evidence_type": "curated_direct",
+                "PMID": "1",
+                "source_url": "https://a.example/lr",
+                "License": "license-a",
+                "is_directed": True,
+            }
+        ]
+    )
+    frame_b = pd.DataFrame(
+        [
+            {
+                "ligand_gene": "L1",
+                "receptor_gene": "R1",
+                "pathway": "P",
+                "evidence_type": "curated_inferred",
+                "PMID": "2",
+                "source_url": "https://b.example/lr",
+                "License": "license-b",
+                "is_directed": True,
+            }
+        ]
+    )
+
+    normalized = pc.load_training_lr_resources(
+        [
+            {"frame": frame_a, "schema": "generic", "species": "human", "taxon_id": 9606, "resource": "A"},
+            {"frame": frame_b, "schema": "generic", "species": "human", "taxon_id": 9606, "resource": "B"},
+        ]
+    )
+
+    row = normalized.iloc[0]
+    assert row["resource"] == "A;B"
+    assert row["support_resources"] == "A;B"
+    assert row["evidence_type"] == "curated_direct;curated_inferred"
+    assert row["pmid"] == "1;2"
+    assert row["source_url"] == "https://a.example/lr;https://b.example/lr"
+    assert row["license"] == "license-a;license-b"
+
+
+def test_load_training_lr_resources_rejects_explicitly_undirected_rows():
+    frame = pd.DataFrame(
+        [
+            {
+                "ligand_gene": "L1",
+                "receptor_gene": "R1",
+                "pathway": "P",
+                "directed": False,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="undirected"):
+        pc.load_training_lr_resources(
+            [{"frame": frame, "schema": "generic", "species": "human", "taxon_id": 9606, "resource": "fixture"}],
+            strict=True,
+        )
+
+
 def test_load_training_lr_resources_strict_missing_columns_fails():
     with pytest.raises(ValueError, match="required column"):
         pc.load_training_lr_resources(
             [{"frame": pd.DataFrame({"not_ligand": ["A"]}), "schema": "generic", "species": "x", "taxon_id": 1}],
             strict=True,
         )
+
+
+def test_build_lr_training_table_drops_incomplete_complex_metadata():
+    interactions = pd.DataFrame(
+        {
+            "ligand_gene": ["L1", "L2", "L3"],
+            "receptor_gene": ["R1", "R2A_R2B", "R3A_R3B"],
+            "species": ["human", "human", "human"],
+            "taxon_id": [9606, 9606, 9606],
+            "resource": ["fixture", "fixture", "fixture"],
+            "evidence_type": ["curated_direct;user_supplied", "curated_direct", "user_supplied"],
+            "annotation": ["", "", ""],
+            "pathway": ["P1", "P2", "P3"],
+            "ligand_sequence": ["ML1", "ML2", "ML3"],
+            "receptor_sequence": ["MR1", "", "MR3"],
+            "receptor_complex_id": ["", "R2_complex", "R3_complex"],
+            "complex_required_subunits": ["", "2", "2"],
+            "complex_subunit_gene": ["", "R2A", "R3A;R3B"],
+        }
+    )
+
+    training = pc.build_lr_training_table(interactions, drop_complexes="partial")
+
+    assert training.interactions["ligand_gene"].tolist() == ["L1", "L3"]
+    assert training.interactions["is_positive_label"].tolist() == [True, False]
 
 
 def test_build_lr_training_table_script_outputs_sequences_and_metadata(tmp_path):

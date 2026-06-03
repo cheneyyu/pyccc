@@ -52,6 +52,41 @@ SUPPORTED_LR_SCHEMAS = {
     "generic",
 }
 
+OPTIONAL_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "resource": ("resource", "resources", "source_database", "database", "sources"),
+    "evidence_type": ("evidence_type", "evidence_class", "evidence_category", "curation_evidence"),
+    "ligand_protein_id": ("ligand_protein_id", "ligand_uniprot", "source_uniprot", "protein_id_a"),
+    "receptor_protein_id": ("receptor_protein_id", "receptor_uniprot", "target_uniprot", "protein_id_b"),
+    "ligand_role": ("ligand_role", "source_role", "role_a"),
+    "receptor_role": ("receptor_role", "target_role", "role_b"),
+    "ligand_complex_id": ("ligand_complex_id", "ligand_complex", "source_complex", "complex_a"),
+    "receptor_complex_id": ("receptor_complex_id", "receptor_complex", "target_complex", "complex_b"),
+    "complex_subunit_gene": ("complex_subunit_gene", "complex_subunit", "subunit_gene", "subunit_genes", "complex_subunits", "subunits"),
+    "complex_required_subunits": ("complex_required_subunits", "required_subunits", "n_subunits", "subunit_count"),
+    "source_url": ("source_url", "url", "database_url", "reference_url"),
+    "curation_type": ("curation_type", "curation", "curation_level"),
+    "directed": ("directed", "is_directed", "direction", "interaction_direction"),
+    "license": ("license", "License", "licence", "license_name"),
+}
+
+PROVENANCE_MERGE_COLUMNS = (
+    "resource",
+    "evidence_type",
+    "annotation",
+    "pmid",
+    "source_url",
+    "curation_type",
+    "directed",
+    "confidence_original",
+    "license",
+    "ligand_role",
+    "receptor_role",
+    "ligand_complex_id",
+    "receptor_complex_id",
+    "complex_subunit_gene",
+    "complex_required_subunits",
+)
+
 SCHEMA_COLUMN_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
     "generic": {
         "ligand_gene": ("ligand_gene", "ligand", "ligand_symbol", "source_genesymbol", "source_gene", "source", "gene_a"),
@@ -160,8 +195,10 @@ def _normalize_one_resource(spec: Mapping[str, object] | str | Path, *, strict: 
     out["receptor_gene"] = _column_or_default(frame, aliases["receptor_gene"], required=True, strict=strict)
     out["species"] = str(spec.get("species", "")).strip()
     out["taxon_id"] = str(spec.get("taxon_id", "")).strip()
-    out["resource"] = str(spec.get("resource", schema)).strip() or schema
-    out["evidence_type"] = str(spec.get("evidence_type", _default_evidence_type(schema))).strip()
+    resource_default = str(spec.get("resource", schema)).strip() or schema
+    evidence_default = str(spec.get("evidence_type", _default_evidence_type(schema))).strip()
+    out["resource"] = _fill_empty(_column_or_default(frame, OPTIONAL_COLUMN_ALIASES["resource"], default=resource_default), resource_default)
+    out["evidence_type"] = _fill_empty(_column_or_default(frame, OPTIONAL_COLUMN_ALIASES["evidence_type"], default=evidence_default), evidence_default)
     out["annotation"] = _column_or_default(frame, aliases.get("annotation", ()), default=str(spec.get("annotation", "")))
     out["pathway"] = _column_or_default(frame, aliases.get("pathway", ()), default=str(spec.get("pathway", "unknown")))
 
@@ -173,13 +210,15 @@ def _normalize_one_resource(spec: Mapping[str, object] | str | Path, *, strict: 
         elif col == "confidence_original":
             out[col] = _column_or_default(frame, aliases.get("confidence_original", (col,)), default="")
         elif col == "license":
-            out[col] = str(spec.get("license", "")).strip()
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default=str(spec.get("license", "")).strip())
         elif col == "source_url":
-            out[col] = str(spec.get("source_url", "")).strip()
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default=str(spec.get("source_url", "")).strip())
         elif col == "directed":
-            out[col] = str(spec.get("directed", True))
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default=str(spec.get("directed", True)))
         elif col == "curation_type":
-            out[col] = str(spec.get("curation_type", schema))
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default=str(spec.get("curation_type", schema)))
+        elif col in OPTIONAL_COLUMN_ALIASES:
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default="")
         else:
             out[col] = _column_or_default(frame, (col,), default="")
 
@@ -235,6 +274,11 @@ def _clean_normalized_lr(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _fill_empty(values: pd.Series, default: str) -> pd.Series:
+    out = values.fillna("").astype(str)
+    return out.mask(out.str.strip() == "", str(default))
+
+
 def _validate_normalized_lr(frame: pd.DataFrame, *, schema: str) -> None:
     missing = [col for col in REQUIRED_TRAINING_LR_COLUMNS if col not in frame.columns]
     if missing:
@@ -244,6 +288,8 @@ def _validate_normalized_lr(frame: pd.DataFrame, *, schema: str) -> None:
         raise ValueError(f"Schema `{schema}` contains empty required values in columns: {empty}")
     if (frame["ligand_gene"].astype(str) == frame["receptor_gene"].astype(str)).any():
         raise ValueError(f"Schema `{schema}` contains self ligand-receptor rows; check interaction direction.")
+    if frame["directed"].map(_explicitly_undirected).any():
+        raise ValueError(f"Schema `{schema}` contains explicitly undirected interactions; provide directed LR rows for predictor training.")
 
 
 def _deduplicate_training_lr(frame: pd.DataFrame) -> pd.DataFrame:
@@ -251,16 +297,49 @@ def _deduplicate_training_lr(frame: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, sub in frame.groupby(group_cols, sort=False, dropna=False):
         row = sub.iloc[0].copy()
-        support_resources = sorted({str(x) for x in sub["resource"].astype(str) if str(x)})
+        support_resources = _semicolon_unique(sub["resource"])
         row["support_count"] = int(len(sub))
-        row["support_resources"] = ";".join(support_resources)
-        row["resource"] = support_resources[0] if support_resources else str(row["resource"])
+        row["support_resources"] = support_resources
+        row["resource"] = support_resources or str(row["resource"])
+        for col in PROVENANCE_MERGE_COLUMNS:
+            if col in sub.columns:
+                merged = _semicolon_unique(sub[col])
+                if merged:
+                    row[col] = merged
+        for col in ("ligand_protein_id", "receptor_protein_id", "ligand_sequence", "receptor_sequence"):
+            if col in sub.columns:
+                first = _first_non_empty(sub[col])
+                if first:
+                    row[col] = first
         rows.append(row)
     out = pd.DataFrame(rows).reset_index(drop=True)
     for col in NORMALIZED_TRAINING_LR_COLUMNS:
         if col not in out.columns:
             out[col] = "" if col != "support_count" else 1
     return out[list(NORMALIZED_TRAINING_LR_COLUMNS)]
+
+
+def _semicolon_unique(values: pd.Series) -> str:
+    parts = []
+    for value in values.dropna().astype(str):
+        for part in value.replace("|", ";").split(";"):
+            part = part.strip()
+            if part:
+                parts.append(part)
+    return ";".join(sorted(set(parts)))
+
+
+def _first_non_empty(values: pd.Series) -> str:
+    for value in values.dropna().astype(str):
+        value = value.strip()
+        if value:
+            return value
+    return ""
+
+
+def _explicitly_undirected(value: object) -> bool:
+    text = str(value).strip().lower()
+    return text in {"false", "0", "no", "n", "undirected", "not_directed"}
 
 
 def _default_evidence_type(schema: str) -> str:
