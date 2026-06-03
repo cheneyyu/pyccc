@@ -11,7 +11,7 @@
   "protein_fasta": "data/proteomes/axolotl.longest_protein.fa",
   "annotation_priority": ["cell_type", "celltype", "annotation", "anno", "cluster", "leiden"],
   "spatial_key": "spatial",
-  "gene_id_key": "gene_id",
+  "gene_id_key": "Gene",
   "publishable_gene_match_min": 0.60,
   "sections": [
     {
@@ -48,8 +48,8 @@
     }
   ],
   "prediction": {
-    "role_model": "models/universal_esmc300m_role_v0",
-    "pair_model": "models/universal_esmc300m_lgbm_v0",
+    "role_model": "models/universal_esmc300m_lgbm_role_classifiers_v0",
+    "pair_model": "models/universal_esmc300m_lgbm_pair_ranker_v0",
     "density_prior": "auto",
     "embedding_model": "biohub/esmc-300m-2024-12",
     "expression_min_fraction": 0.01,

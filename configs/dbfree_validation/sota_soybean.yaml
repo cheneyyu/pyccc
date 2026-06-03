@@ -32,8 +32,8 @@
     }
   ],
   "prediction": {
-    "role_model": "models/universal_esmc300m_role_v0",
-    "pair_model": "models/universal_esmc300m_lgbm_v0",
+    "role_model": "models/universal_esmc300m_lgbm_role_classifiers_v0",
+    "pair_model": "models/universal_esmc300m_lgbm_pair_ranker_v0",
     "density_prior": "auto",
     "embedding_model": "biohub/esmc-300m-2024-12",
     "expression_min_fraction": 0.01,
