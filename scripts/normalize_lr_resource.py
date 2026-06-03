@@ -11,6 +11,7 @@ def main() -> None:
     parser.add_argument("--schema", default="generic")
     parser.add_argument("--species", required=True)
     parser.add_argument("--taxon-id", required=True)
+    parser.add_argument("--clade", default="")
     parser.add_argument("--resource")
     parser.add_argument("--license", default="")
     parser.add_argument("--source-url", default="")
@@ -23,6 +24,7 @@ def main() -> None:
                 "schema": args.schema,
                 "species": args.species,
                 "taxon_id": args.taxon_id,
+                "clade": args.clade,
                 "resource": args.resource or args.schema,
                 "license": args.license,
                 "source_url": args.source_url,

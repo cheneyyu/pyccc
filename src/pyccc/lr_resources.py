@@ -19,6 +19,7 @@ REQUIRED_TRAINING_LR_COLUMNS = (
 )
 
 OPTIONAL_TRAINING_LR_COLUMNS = (
+    "clade",
     "ligand_protein_id",
     "receptor_protein_id",
     "ligand_sequence",
@@ -53,6 +54,7 @@ SUPPORTED_LR_SCHEMAS = {
 }
 
 OPTIONAL_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
+    "clade": ("clade", "kingdom", "superkingdom", "lineage_clade"),
     "resource": ("resource", "resources", "source_database", "database", "sources"),
     "evidence_type": ("evidence_type", "evidence_class", "evidence_category", "curation_evidence"),
     "ligand_protein_id": ("ligand_protein_id", "ligand_uniprot", "source_uniprot", "protein_id_a"),
@@ -70,6 +72,7 @@ OPTIONAL_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 PROVENANCE_MERGE_COLUMNS = (
+    "clade",
     "resource",
     "evidence_type",
     "annotation",
@@ -196,6 +199,7 @@ def _normalize_one_resource(spec: Mapping[str, object] | str | Path, *, strict: 
     out["species"] = str(spec.get("species", "")).strip()
     out["taxon_id"] = str(spec.get("taxon_id", "")).strip()
     resource_default = str(spec.get("resource", schema)).strip() or schema
+    clade_default = str(spec.get("clade", "")).strip()
     evidence_default = str(spec.get("evidence_type", _default_evidence_type(schema))).strip()
     out["resource"] = _fill_empty(_column_or_default(frame, OPTIONAL_COLUMN_ALIASES["resource"], default=resource_default), resource_default)
     out["evidence_type"] = _fill_empty(_column_or_default(frame, OPTIONAL_COLUMN_ALIASES["evidence_type"], default=evidence_default), evidence_default)
@@ -205,6 +209,8 @@ def _normalize_one_resource(spec: Mapping[str, object] | str | Path, *, strict: 
     for col in OPTIONAL_TRAINING_LR_COLUMNS:
         if col in {"ligand_sequence", "receptor_sequence"}:
             out[col] = _column_or_default(frame, (col,), default="")
+        elif col == "clade":
+            out[col] = _column_or_default(frame, OPTIONAL_COLUMN_ALIASES[col], default=clade_default)
         elif col == "pmid":
             out[col] = _column_or_default(frame, ("pmid", "pubmed", "PMID"), default="")
         elif col == "confidence_original":

@@ -20,15 +20,22 @@ def test_load_training_lr_resources_supports_expected_local_schemas():
         ("generic", {"ligand_gene": "VEGFA", "receptor_gene": "KDR", "pathway": "VEGF"}),
     ]
     resources = [
-        {"frame": pd.DataFrame([row]), "schema": schema, "species": f"species_{schema}", "taxon_id": i + 1}
+        {
+            "frame": pd.DataFrame([row]),
+            "schema": schema,
+            "species": f"species_{schema}",
+            "taxon_id": i + 1,
+            "clade": "animal" if schema != "plantcellchat" else "plant",
+        }
         for i, (schema, row) in enumerate(specs)
     ]
 
     normalized = pc.load_training_lr_resources(resources)
 
     assert normalized.shape[0] == len(specs)
-    assert {"ligand_gene", "receptor_gene", "species", "taxon_id", "resource", "evidence_type", "support_count"}.issubset(normalized.columns)
+    assert {"ligand_gene", "receptor_gene", "species", "taxon_id", "clade", "resource", "evidence_type", "support_count"}.issubset(normalized.columns)
     assert set(normalized["evidence_type"]) == {"curated_direct", "user_supplied"}
+    assert set(normalized["clade"]) == {"animal", "plant"}
     db = pc.training_lr_to_cellchatdb(normalized)
     assert db.interactions.shape[0] == len(specs)
 
@@ -97,6 +104,25 @@ def test_load_training_lr_resources_merges_duplicate_provenance_fields():
     assert row["pmid"] == "1;2"
     assert row["source_url"] == "https://a.example/lr;https://b.example/lr"
     assert row["license"] == "license-a;license-b"
+
+
+def test_load_training_lr_resources_preserves_clade_from_table_alias():
+    frame = pd.DataFrame(
+        [
+            {
+                "ligand_gene": "PSK1",
+                "receptor_gene": "PSKR1",
+                "pathway": "PSK",
+                "kingdom": "plant",
+            }
+        ]
+    )
+
+    normalized = pc.load_training_lr_resources(
+        [{"frame": frame, "schema": "generic", "species": "soybean", "taxon_id": 3847, "resource": "plant_fixture"}],
+    )
+
+    assert normalized.loc[0, "clade"] == "plant"
 
 
 def test_load_training_lr_resources_rejects_explicitly_undirected_rows():

@@ -5,8 +5,9 @@ adds protein sequences and labels for predictor training.
 
 ```python
 resources = pc.load_training_lr_resources([
-    {"path": "cellchat_human.tsv", "schema": "cellchat", "species": "human", "taxon_id": 9606},
-    {"path": "cellchat_mouse.tsv", "schema": "cellchat", "species": "mouse", "taxon_id": 10090},
+    {"path": "cellchat_human.tsv", "schema": "cellchat", "species": "human", "taxon_id": 9606, "clade": "animal"},
+    {"path": "cellchat_mouse.tsv", "schema": "cellchat", "species": "mouse", "taxon_id": 10090, "clade": "animal"},
+    {"path": "plant_lr.tsv", "schema": "plantcellchat", "species": "arabidopsis", "taxon_id": 3702, "clade": "plant"},
 ])
 
 train = pc.build_lr_training_table(
@@ -40,6 +41,7 @@ uv run python scripts/normalize_lr_resource.py \
   --schema cellchat \
   --species human \
   --taxon-id 9606 \
+  --clade animal \
   --output normalized_cellchat_human.tsv
 
 uv run python scripts/build_lr_training_table.py \
