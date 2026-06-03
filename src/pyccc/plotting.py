@@ -1587,6 +1587,90 @@ def spatial_network(
     return ax
 
 
+def spatial_validation_enrichment(
+    report,
+    *,
+    score_type: str = "model_weighted_spatial_ccc_score",
+    k: int | None = None,
+    ax=None,
+    title: str | None = None,
+):
+    """Bar plot of spatial top-K enrichment z-scores from a validation report."""
+
+    data = getattr(report, "top_k_enrichment", None)
+    ax = _plain_ax(ax)
+    if data is None or data.empty:
+        return _empty_plot(ax, title or "Spatial validation enrichment")
+    df = data.copy()
+    if score_type is not None and "score_type" in df.columns:
+        df = df[df["score_type"].astype(str) == str(score_type)].copy()
+    if k is not None and "k" in df.columns:
+        df = df[df["k"].astype(int) == int(k)].copy()
+    if df.empty or "top_k_enrichment_z" not in df.columns:
+        return _empty_plot(ax, title or "Spatial validation enrichment")
+    df["k"] = pd.to_numeric(df["k"], errors="coerce").astype("Int64").astype(str)
+    hue = "kernel" if "kernel" in df.columns else None
+    palette = _categorical_palette(df[hue]) if hue is not None else None
+    sns.barplot(
+        df,
+        x="k",
+        y="top_k_enrichment_z",
+        hue=hue,
+        ax=ax,
+        palette=palette,
+    )
+    ax.axhline(0, color="#9ca3af", linewidth=0.8)
+    ax.set_xlabel("Top K")
+    ax.set_ylabel("Enrichment z-score")
+    ax.set_title(title or "Spatial validation top-K enrichment")
+    _polish_plain_ax(ax)
+    return ax
+
+
+def spatial_validation_distance_decay(
+    report,
+    *,
+    score_col: str = "mean_spatial_ccc_score",
+    top_n: int = 8,
+    ax=None,
+    title: str | None = None,
+):
+    """Line plot of distance-bin spatial CCC scores from a validation report."""
+
+    data = getattr(report, "distance_decay", None)
+    ax = _plain_ax(ax)
+    if data is None or data.empty or score_col not in data.columns:
+        return _empty_plot(ax, title or "Spatial validation distance decay")
+    df = data.copy()
+    df["pair"] = df["ligand"].astype(str) + "->" + df["receptor"].astype(str)
+    rank = (
+        df.groupby("pair", observed=True)[score_col]
+        .mean()
+        .sort_values(ascending=False)
+        .head(max(int(top_n), 1))
+        .index
+    )
+    df = df[df["pair"].isin(rank)].copy()
+    if df.empty:
+        return _empty_plot(ax, title or "Spatial validation distance decay")
+    palette = _categorical_palette(df["pair"])
+    sns.lineplot(
+        df,
+        x="mean_distance",
+        y=score_col,
+        hue="pair",
+        marker="o",
+        linewidth=1.4,
+        ax=ax,
+        palette=palette,
+    )
+    ax.set_xlabel("Distance")
+    ax.set_ylabel("Mean spatial CCC score")
+    ax.set_title(title or "Spatial validation distance decay")
+    _polish_plain_ax(ax)
+    return ax
+
+
 def key_plot_gallery(result: CCCResult, diff: DifferentialCCC | None = None, *, figsize: tuple[float, float] | None = None):
     """Create a CellChat-style gallery of the main pyccc visual summaries."""
 
@@ -2375,6 +2459,14 @@ def _palette(groups: Sequence[str], cmap: str) -> dict[str, object]:
             colors = list(plt.get_cmap("tab20")(np.linspace(0, 1, len(groups))))
     else:
         colors = _cmap(cmap)(np.linspace(0, 1, max(len(groups), 1)))
+    return {group: colors[i] for i, group in enumerate(groups)}
+
+
+def _categorical_palette(values: Sequence[object]) -> dict[str, object]:
+    groups = list(dict.fromkeys(pd.Series(values).dropna().astype(str)))
+    colors = CELLCHAT_PALETTE
+    if len(groups) > len(colors):
+        colors = list(plt.get_cmap("tab20")(np.linspace(0, 1, len(groups))))
     return {group: colors[i] for i, group in enumerate(groups)}
 
 

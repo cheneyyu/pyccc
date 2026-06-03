@@ -79,6 +79,19 @@ the curated table in `summary["curated_overlap"]` and reports whether those
 overlapping pairs have stronger spatial scores than non-overlapping predicted
 pairs in `curated_overlap_enrichment`.
 
+Example plots are available from the Matplotlib plotting API:
+
+```python
+import pyccc.plotting as cp
+
+cp.spatial_validation_enrichment(report)
+cp.spatial_validation_distance_decay(report, top_n=8)
+```
+
+`spatial_validation_enrichment` visualizes top-K enrichment z-scores against
+the requested null models. `spatial_validation_distance_decay` shows binned
+spatial CCC scores over physical distance for the highest-scoring LR pairs.
+
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the
 median cell area; otherwise it uses the median nearest-neighbor distance.

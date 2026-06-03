@@ -2,8 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 from anndata import AnnData
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 import pyccc as pc
+import pyccc.plotting as cp
 from pyccc.spatial_validation import _permute_groups_for_celltype_null
 
 
@@ -77,6 +82,9 @@ def test_spatial_validation_reports_null_statistics():
     assert report.metadata["celltype_permutation_scope"] == "section"
     assert report.metadata["curated_lr_table"] is True
     assert report.metadata["top_k"] == [100, 500, 1000]
+    assert cp.spatial_validation_enrichment(report) is not None
+    assert cp.spatial_validation_distance_decay(report) is not None
+    plt.close("all")
 
 
 def test_celltype_null_permutation_can_be_section_stratified():
