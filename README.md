@@ -76,26 +76,21 @@ uv run python examples/three_way_runtime_benchmark.py \
 
 ## Install
 
+Clone the repository and create the local `uv` environment in one step:
+
 ```bash
-uv sync --extra dev
+git clone https://github.com/cheneyyu/pyccc.git
+cd pyccc
+uv sync --extra dev --extra ggplot --extra interactive --extra docs
+uv run pytest -q
 ```
 
-Optional LIANA support:
+This installs the core package, test tools, plotnine-style plotting, interactive
+Plotly outputs, and documentation dependencies. Add LIANA support only when you
+need LIANA import helpers:
 
 ```bash
-uv sync --extra liana --extra dev
-```
-
-Optional plotnine/ggplot-style plotting support:
-
-```bash
-uv sync --extra ggplot --extra dev
-```
-
-Optional interactive HTML river plots:
-
-```bash
-uv sync --extra interactive --extra dev
+uv sync --extra liana --extra dev --extra ggplot --extra interactive --extra docs
 ```
 
 ## Quick Start

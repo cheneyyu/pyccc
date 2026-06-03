@@ -1,15 +1,21 @@
 # Installation
 
-Install the core package:
+Clone the repository and create the local `uv` environment in one step:
 
 ```bash
-pip install pyccc
+git clone https://github.com/cheneyyu/pyccc.git
+cd pyccc
+uv sync --extra dev --extra ggplot --extra interactive --extra docs
+uv run pytest -q
 ```
 
-For local development from this repository:
+This installs the core package, test tools, plotnine-style plotting,
+interactive Plotly outputs, and documentation dependencies.
+
+Add LIANA support only when you need LIANA import helpers:
 
 ```bash
-uv sync --extra dev --extra ggplot --extra interactive --extra docs
+uv sync --extra liana --extra dev --extra ggplot --extra interactive --extra docs
 ```
 
 Optional extras:
