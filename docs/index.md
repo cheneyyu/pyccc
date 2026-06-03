@@ -10,10 +10,15 @@ CCC, and can export results back to CellChat R objects for R-native plotting.
 :caption: User Guide
 
 installation
+lr_resources
+lr_resource_training
+dbfree_ccc
+spatial_validation
 plotting_gallery
 million_cell_scaling
 reproducibility
 cellchat_visual_coverage
+predictor_model_card
 ```
 
 ```{toctree}

@@ -1,0 +1,152 @@
+# Experimental DB-Free CCC
+
+DB-free target-species CCC means the target species does not need a curated
+ligand-receptor database. The predictor still learns from curated resources in
+other species, then generates a candidate LR table for the target species from
+protein sequences and expression constraints.
+
+This is experimental. Predicted LR rows are computational candidates, not
+validated biochemical interactions.
+
+Install prediction dependencies only when needed:
+
+```bash
+python -m pip install "pyccc[ggplot,interactive,omnipath,predict] @ git+https://github.com/cheneyyu/pyccc.git@main"
+```
+
+## Inputs
+
+Required inputs:
+
+- AnnData expression matrix,
+- gene identifiers matching `adata.var_names` or `adata.var[gene_id_key]`,
+- CDS FASTA or longest protein FASTA,
+- trained role and LR link predictor models, or explicit candidate lists.
+
+## Sequence Preparation
+
+```python
+proteins = pc.load_cds_translations(
+    "species.longest_cds.fa",
+    gene_id_regex=r"gene=([^\s]+)",
+    transcript_id_regex=r"transcript=([^\s]+)",
+    select="longest",
+)
+
+match = pc.match_expression_genes(adata, proteins, gene_id_key="gene_id")
+```
+
+Protein FASTA is also supported:
+
+```python
+proteins = pc.load_protein_fasta("species.longest_protein.fa")
+```
+
+## Embeddings and Roles
+
+```python
+emb = pc.embed_proteins_esmc(
+    proteins,
+    model_name="biohub/ESMC-300M",
+    pooling="mean",
+    cache_dir=".pyccc-cache/esmc",
+)
+
+roles = pc.predict_protein_roles(
+    proteins=proteins,
+    embeddings=emb,
+    model="models/universal_esmc300m_role_v0",
+)
+```
+
+The cache key includes sequence hash, model name, model revision, and pooling.
+
+## Candidate Generation and Scoring
+
+```python
+candidates = pc.generate_lr_candidates_dbfree(
+    adata=adata,
+    proteins=proteins,
+    roles=roles,
+    gene_id_key="gene_id",
+    expression_min_fraction=0.02,
+    ligand_role_min=0.30,
+    receptor_role_min=0.30,
+    max_ligands=3000,
+    max_receptors=3000,
+    max_candidate_pairs=5_000_000,
+)
+
+scores = pc.score_lr_candidates(
+    candidate_pairs=candidates,
+    embeddings=emb,
+    model="models/universal_esmc300m_lgbm_v0",
+)
+```
+
+Users can bypass role prediction with explicit candidates:
+
+```python
+candidates = pc.generate_lr_candidates_dbfree(
+    adata,
+    proteins,
+    roles,
+    gene_id_key="gene_id",
+    ligand_candidates="known_secreted_genes.txt",
+    receptor_candidates="known_surface_genes.txt",
+)
+```
+
+## Density Thresholding
+
+```python
+density = pc.estimate_lr_density_prior(train.interactions, groupby="clade")
+
+predicted_db = pc.build_predicted_lr_table(
+    scored_pairs=scores,
+    roles=roles,
+    density_prior=density,
+    species_hint="plant",
+    min_score=0.50,
+    max_pairs=50000,
+)
+```
+
+The output is a normal `CellChatDB` object. It includes `model_score`,
+`calibrated_probability`, `density_prior`, `density_rank`, confidence,
+provenance columns, and prediction summary metadata.
+
+## End-to-End Wrapper
+
+```python
+predicted_db = pc.predict_lr_dbfree(
+    adata,
+    protein_fasta="target.longest_protein.fa",
+    gene_id_key="gene_id",
+    species_name="target_species",
+    species_hint="unknown",
+    model="models/universal_esmc300m_lgbm_v0",
+    density_prior="auto",
+    max_pairs=50000,
+    cache_dir=".pyccc-cache",
+)
+
+res = pc.compute_communication(
+    adata,
+    groupby="cell_type",
+    lr_table=predicted_db,
+    gene_symbols_key="gene_id",
+    score_method="cellchat",
+)
+```
+
+`compute_communication` remains deterministic. It does not infer LR pairs
+silently; prediction is an explicit upstream step.
+
+## Limitations
+
+- Do not interpret candidate rows as validated LR biology.
+- Do not invent curated pathway labels; predicted rows use
+  `pathway = "DB-free predicted"`.
+- Use leave-species/resource/family validation before making biological claims.
+- Use spatial validation as plausibility evidence only.

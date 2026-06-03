@@ -27,6 +27,37 @@
 ```{eval-rst}
 .. automodule:: pyccc.database
    :members:
+
+.. automodule:: pyccc.lr_resources
+   :members:
+
+.. automodule:: pyccc.training_data
+   :members:
+```
+
+## DB-Free Prediction
+
+```{eval-rst}
+.. automodule:: pyccc.sequence
+   :members:
+
+.. automodule:: pyccc.embeddings
+   :members:
+
+.. automodule:: pyccc.pair_features
+   :members:
+
+.. automodule:: pyccc.roles
+   :members:
+
+.. automodule:: pyccc.lr_prediction
+   :members:
+
+.. automodule:: pyccc.density
+   :members:
+
+.. automodule:: pyccc.spatial_validation
+   :members:
 ```
 
 ## Matplotlib Plotting

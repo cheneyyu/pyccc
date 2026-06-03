@@ -43,6 +43,14 @@ interactive = [
     "plotly>=5.20",
 ]
 omnipath = ["omnipath>=1.0"]
+predict = [
+    "torch>=2.2",
+    "transformers>=4.45",
+    "huggingface-hub>=0.24",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.0",
+    "joblib>=1.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/cheneyyu/pyccc"
@@ -60,3 +68,10 @@ packages = ["src/pyccc"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "predict: tests that require the experimental prediction extra",
+    "spatial: tests for spatial validation utilities",
+    "network: tests that require live network access",
+    "gpu: tests that require a GPU",
+    "slow: long-running benchmark or model tests",
+]

@@ -13,6 +13,7 @@ cell-cell communication workflow:
 - compare two conditions for differential CCC
 - reproduce CellChat-like plot types in Matplotlib
 - load official CellChatDB and OmniPath ligand-receptor resources
+- experimentally predict candidate LR tables for species without curated LR DBs
 - optionally import or run LIANA results
 
 The package is intentionally AnnData-first and keeps results in tidy pandas
@@ -91,6 +92,12 @@ Add LIANA support only when you need LIANA import helpers:
 
 ```bash
 python -m pip install "pyccc[ggplot,interactive,omnipath,liana] @ git+https://github.com/cheneyyu/pyccc.git@main"
+```
+
+Add experimental DB-free LR prediction dependencies only when needed:
+
+```bash
+python -m pip install "pyccc[ggplot,interactive,omnipath,predict] @ git+https://github.com/cheneyyu/pyccc.git@main"
 ```
 
 ## Quick Start
@@ -296,6 +303,31 @@ omni_cellchat = pc.filter_lr_table(omni, resources="CellChatDB")
 For downloaded CSV/TSV/Parquet LR tables, pyccc accepts `ligand`/`receptor`
 columns and common OmniPath-style aliases such as `source_genesymbol` and
 `target_genesymbol`.
+
+Experimental DB-free target-species CCC:
+
+```python
+predicted_db = pc.predict_lr_dbfree(
+    adata,
+    protein_fasta="target.longest_protein.fa",
+    gene_id_key="gene_id",
+    species_name="target_species",
+    model="models/universal_esmc300m_lgbm_v0",
+    density_prior="auto",
+)
+
+res = pc.compute_communication(
+    adata,
+    groupby="cell_type",
+    lr_table=predicted_db,
+    gene_symbols_key="gene_id",
+    score_method="cellchat",
+)
+```
+
+See `docs/lr_resources.md`, `docs/lr_resource_training.md`,
+`docs/dbfree_ccc.md`, and `docs/spatial_validation.md` for the experimental
+predictor workflow and limitations.
 
 Run the official CellChat human skin vignette data through pyccc plotnine
 figures:
