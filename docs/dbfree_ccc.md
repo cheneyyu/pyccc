@@ -78,6 +78,7 @@ candidates = pc.generate_lr_candidates_dbfree(
     adata=adata,
     proteins=proteins,
     roles=roles,
+    embeddings=emb,
     gene_id_key="gene_id",
     expression_min_fraction=0.02,
     ligand_role_min=0.30,
@@ -85,6 +86,7 @@ candidates = pc.generate_lr_candidates_dbfree(
     max_ligands=3000,
     max_receptors=3000,
     max_candidate_pairs=5_000_000,
+    nearest_neighbor_pairs=0,
 )
 
 scores = pc.score_lr_candidates(
@@ -97,6 +99,13 @@ scores = pc.score_lr_candidates(
 `model_score` is the raw rank score used for top-K density filtering.
 `calibrated_probability` is produced by the held-out calibrator when the saved
 model includes one; otherwise it falls back to `model_score`.
+
+By default, candidate generation uses a role/expression cross product. Set
+`nearest_neighbor_pairs` above zero to reserve part of the candidate budget for
+high-cosine ligand/receptor neighbors in ESMC embedding space. These rows keep
+`candidate_strategy="embedding_nearest_neighbor"` or a semicolon-separated
+combined strategy after deduplication, so downstream tables preserve where each
+candidate came from.
 
 Users can bypass role prediction with explicit candidates:
 

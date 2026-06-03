@@ -21,6 +21,7 @@ def generate_lr_candidates_dbfree(
     proteins: pd.DataFrame,
     roles: pd.DataFrame,
     *,
+    embeddings: pd.DataFrame | None = None,
     gene_id_key: str | None = None,
     expression_min_fraction: float = 0.02,
     ligand_role_min: float = 0.30,
@@ -28,11 +29,21 @@ def generate_lr_candidates_dbfree(
     max_ligands: int = 3000,
     max_receptors: int = 3000,
     max_candidate_pairs: int = 5_000_000,
+    nearest_neighbor_pairs: int = 0,
+    nearest_neighbors_per_ligand: int = 10,
     ligand_candidates: str | Path | Sequence[str] | None = None,
     receptor_candidates: str | Path | Sequence[str] | None = None,
 ) -> pd.DataFrame:
-    """Generate role- and expression-filtered candidate LR pairs."""
+    """Generate role-, expression-, and optional embedding-neighbor LR pairs."""
 
+    if max_candidate_pairs < 1:
+        raise ValueError("`max_candidate_pairs` must be at least 1.")
+    if nearest_neighbor_pairs < 0:
+        raise ValueError("`nearest_neighbor_pairs` must be non-negative.")
+    if nearest_neighbors_per_ligand < 1:
+        raise ValueError("`nearest_neighbors_per_ligand` must be at least 1.")
+    if nearest_neighbor_pairs and embeddings is None:
+        raise ValueError("`embeddings` is required when `nearest_neighbor_pairs` is greater than 0.")
     expressed = _expressed_gene_fractions(adata, gene_id_key=gene_id_key)
     expressed = expressed[expressed["expression_fraction"] >= expression_min_fraction]
     role_frame = roles.merge(proteins[["gene_id", "protein_id"]], on=["gene_id", "protein_id"], how="inner")
@@ -49,30 +60,38 @@ def generate_lr_candidates_dbfree(
     receptors = receptors.sort_values(["receptor_like_score", "expression_fraction"], ascending=False).head(max_receptors)
     if ligands.empty or receptors.empty:
         raise ValueError("No ligand or receptor candidates remain after role/expression filtering.")
+    neighbor_ligands = ligands.copy()
+    neighbor_receptors = receptors.copy()
     total = len(ligands) * len(receptors)
-    if total > max_candidate_pairs:
-        keep_receptors = max(1, max_candidate_pairs // max(len(ligands), 1))
+    neighbor_budget = min(int(nearest_neighbor_pairs), int(max_candidate_pairs))
+    cross_product_budget = max(0, int(max_candidate_pairs) - neighbor_budget)
+    if total > cross_product_budget:
+        keep_receptors = (
+            max(1, cross_product_budget // max(len(ligands), 1))
+            if cross_product_budget > 0
+            else 0
+        )
         receptors = receptors.head(keep_receptors)
-        total = len(ligands) * len(receptors)
     rows = []
-    for lig in ligands.itertuples(index=False):
-        for rec in receptors.itertuples(index=False):
-            if str(lig.gene_id) == str(rec.gene_id):
-                continue
-            rows.append(
-                {
-                    "ligand_gene": str(lig.gene_id),
-                    "receptor_gene": str(rec.gene_id),
-                    "ligand_role_score": float(lig.ligand_like_score),
-                    "receptor_role_score": float(rec.receptor_like_score),
-                    "ligand_expression_fraction": float(lig.expression_fraction),
-                    "receptor_expression_fraction": float(rec.expression_fraction),
-                    "candidate_strategy": "role_expression_cross_product",
-                }
+    if cross_product_budget > 0:
+        for lig in ligands.itertuples(index=False):
+            for rec in receptors.itertuples(index=False):
+                if str(lig.gene_id) == str(rec.gene_id):
+                    continue
+                rows.append(_candidate_row(lig, rec, strategy="role_expression_cross_product"))
+    if neighbor_budget > 0:
+        rows.extend(
+            _embedding_nearest_neighbor_candidate_rows(
+                neighbor_ligands,
+                neighbor_receptors,
+                embeddings,
+                top_pairs=neighbor_budget,
+                neighbors_per_ligand=nearest_neighbors_per_ligand,
             )
+        )
     if not rows:
         raise ValueError("Candidate generation produced no non-self LR pairs.")
-    return pd.DataFrame(rows).head(max_candidate_pairs)
+    return _deduplicate_candidate_rows(rows).head(max_candidate_pairs)
 
 
 def train_lr_link_predictor(
@@ -337,6 +356,7 @@ def predict_lr_dbfree(
         adata,
         proteins,
         roles,
+        embeddings=emb,
         gene_id_key=gene_id_key,
         ligand_candidates=ligand_candidates,
         receptor_candidates=receptor_candidates,
@@ -476,6 +496,90 @@ def _expressed_gene_fractions(adata, *, gene_id_key: str | None) -> pd.DataFrame
     else:
         frac = np.asarray(x > 0).mean(axis=0)
     return pd.DataFrame({"gene_id": genes.astype(str), "expression_fraction": frac.astype(float)})
+
+
+def _candidate_row(lig, rec, *, strategy: str, embedding_cosine: float | None = None) -> dict[str, object]:
+    row = {
+        "ligand_gene": str(lig.gene_id),
+        "receptor_gene": str(rec.gene_id),
+        "ligand_role_score": float(lig.ligand_like_score),
+        "receptor_role_score": float(rec.receptor_like_score),
+        "ligand_expression_fraction": float(lig.expression_fraction),
+        "receptor_expression_fraction": float(rec.expression_fraction),
+        "candidate_strategy": strategy,
+    }
+    if embedding_cosine is not None:
+        row["embedding_cosine"] = float(embedding_cosine)
+    return row
+
+
+def _embedding_nearest_neighbor_candidate_rows(
+    ligands: pd.DataFrame,
+    receptors: pd.DataFrame,
+    embeddings: pd.DataFrame | None,
+    *,
+    top_pairs: int,
+    neighbors_per_ligand: int,
+    block_size: int = 256,
+) -> list[dict[str, object]]:
+    if embeddings is None or top_pairs <= 0:
+        return []
+    lookup = {
+        str(row.gene_id): np.asarray(row.embedding, dtype=np.float32)
+        for row in embeddings.itertuples(index=False)
+    }
+    ligands = ligands[ligands["gene_id"].astype(str).isin(lookup)].copy()
+    receptors = receptors[receptors["gene_id"].astype(str).isin(lookup)].copy()
+    if ligands.empty or receptors.empty:
+        raise ValueError("Embedding nearest-neighbor candidate generation found no ligand/receptor embeddings.")
+    receptor_vectors = np.vstack([lookup[str(gene)] for gene in receptors["gene_id"].astype(str)]).astype(np.float32)
+    receptor_vectors = _l2_normalize(receptor_vectors)
+    candidate_rows: list[tuple[float, dict[str, object]]] = []
+    k = min(int(neighbors_per_ligand), len(receptors))
+    for start in range(0, len(ligands), block_size):
+        block = ligands.iloc[start : start + block_size]
+        ligand_vectors = np.vstack([lookup[str(gene)] for gene in block["gene_id"].astype(str)]).astype(np.float32)
+        ligand_vectors = _l2_normalize(ligand_vectors)
+        cosine = ligand_vectors @ receptor_vectors.T
+        top_idx = np.argpartition(-cosine, kth=np.arange(k), axis=1)[:, :k]
+        for i, lig in enumerate(block.itertuples(index=False)):
+            ordered = top_idx[i][np.argsort(-cosine[i, top_idx[i]])]
+            for j in ordered:
+                rec = receptors.iloc[int(j)]
+                if str(lig.gene_id) == str(rec.gene_id):
+                    continue
+                row = _candidate_row(
+                    lig,
+                    rec,
+                    strategy="embedding_nearest_neighbor",
+                    embedding_cosine=float(cosine[i, j]),
+                )
+                candidate_rows.append((float(cosine[i, j]), row))
+    candidate_rows.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in candidate_rows[:top_pairs]]
+
+
+def _l2_normalize(x: np.ndarray) -> np.ndarray:
+    denom = np.linalg.norm(x, axis=1, keepdims=True)
+    return np.divide(x, denom, out=np.zeros_like(x, dtype=np.float32), where=denom > 0)
+
+
+def _deduplicate_candidate_rows(rows: list[dict[str, object]]) -> pd.DataFrame:
+    by_pair: dict[tuple[str, str], dict[str, object]] = {}
+    for row in rows:
+        key = (str(row["ligand_gene"]), str(row["receptor_gene"]))
+        if key not in by_pair:
+            by_pair[key] = row.copy()
+            continue
+        existing = by_pair[key]
+        strategies = [part for part in str(existing.get("candidate_strategy", "")).split(";") if part]
+        strategy = str(row.get("candidate_strategy", ""))
+        if strategy and strategy not in strategies:
+            strategies.append(strategy)
+            existing["candidate_strategy"] = ";".join(strategies)
+        if "embedding_cosine" in row and pd.isna(existing.get("embedding_cosine", np.nan)):
+            existing["embedding_cosine"] = row["embedding_cosine"]
+    return pd.DataFrame(by_pair.values()).reset_index(drop=True)
 
 
 def _candidate_list(value: str | Path | Sequence[str]) -> set[str]:

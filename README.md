@@ -315,6 +315,7 @@ predicted_db = pc.predict_lr_dbfree(
     role_model="models/universal_esmc300m_role_v0",
     model="models/universal_esmc300m_lgbm_v0",
     density_prior="auto",
+    nearest_neighbor_pairs=10000,  # optional ESMC-space recall candidates
 )
 
 res = pc.compute_communication(

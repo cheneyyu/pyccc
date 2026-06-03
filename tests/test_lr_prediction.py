@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from anndata import AnnData
 from joblib import load
 
 import pyccc as pc
@@ -39,6 +40,59 @@ def _fixture_training():
         }
     )
     return interactions, embeddings
+
+
+def test_generate_candidates_can_add_embedding_neighbors_under_budget():
+    genes = ["L1", "L2", "R1", "R2", "R3"]
+    adata = AnnData(
+        np.ones((3, len(genes)), dtype=float),
+        var=pd.DataFrame({"gene_id": genes}, index=genes),
+    )
+    proteins = pd.DataFrame({"gene_id": genes, "protein_id": genes})
+    roles = pd.DataFrame(
+        {
+            "gene_id": genes,
+            "protein_id": genes,
+            "ligand_like_score": [0.95, 0.85, 0.05, 0.05, 0.05],
+            "receptor_like_score": [0.05, 0.05, 0.95, 0.85, 0.75],
+        }
+    )
+    embeddings = pd.DataFrame(
+        {
+            "gene_id": genes,
+            "embedding": [
+                np.array([1.0, 0.0], dtype=np.float32),
+                np.array([0.0, 1.0], dtype=np.float32),
+                np.array([-1.0, 0.0], dtype=np.float32),
+                np.array([0.0, 1.0], dtype=np.float32),
+                np.array([1.0, 0.0], dtype=np.float32),
+            ],
+        }
+    )
+
+    candidates = pc.generate_lr_candidates_dbfree(
+        adata,
+        proteins,
+        roles,
+        embeddings=embeddings,
+        gene_id_key="gene_id",
+        expression_min_fraction=0.0,
+        max_candidate_pairs=4,
+        nearest_neighbor_pairs=2,
+    )
+
+    assert len(candidates) <= 4
+    assert (candidates["candidate_strategy"].str.contains("embedding_nearest_neighbor")).any()
+    assert ((candidates["ligand_gene"] == "L1") & (candidates["receptor_gene"] == "R3")).any()
+    assert "embedding_cosine" in candidates.columns
+
+    predicted = pc.build_predicted_lr_table(
+        candidates.assign(model_score=1.0, calibrated_probability=1.0),
+        density_prior=1.0,
+        min_score=0.0,
+        max_pairs=4,
+    )
+    assert (predicted.interactions["candidate_strategy"].str.contains("embedding_nearest_neighbor")).any()
 
 
 def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):

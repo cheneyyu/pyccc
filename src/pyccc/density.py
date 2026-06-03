@@ -116,6 +116,12 @@ def build_predicted_lr_table(
     selected["confidence"] = selected.get("calibrated_probability", selected["model_score"]).astype(float)
     if "calibrated_probability" not in selected.columns:
         selected["calibrated_probability"] = selected["model_score"]
+    candidate_strategy_values = (
+        selected.get("candidate_strategy", pd.Series([candidate_strategy] * len(selected)))
+        .fillna("")
+        .astype(str)
+    )
+    candidate_strategy_values = candidate_strategy_values.mask(candidate_strategy_values == "", candidate_strategy)
     global_warnings = []
     if str(density_meta.get("density_mode", "")) == "auto_default":
         global_warnings.append("auto_default_density_prior")
@@ -141,7 +147,7 @@ def build_predicted_lr_table(
             "feature_encoder": feature_encoder,
             "density_prior": float(rho),
             "density_rank": selected["density_rank"].astype(int),
-            "candidate_strategy": candidate_strategy,
+            "candidate_strategy": candidate_strategy_values,
             "ligand_role_score": selected.get("ligand_role_score", pd.Series([0.0] * len(selected))).astype(float),
             "receptor_role_score": selected.get("receptor_role_score", pd.Series([0.0] * len(selected))).astype(float),
             "nearest_reference_ligand": selected.get("nearest_reference_ligand", pd.Series([""] * len(selected))).astype(str),
