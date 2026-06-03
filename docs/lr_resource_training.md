@@ -53,7 +53,8 @@ uv run --extra predict python scripts/train_role_classifier.py \
   --training-lr data/lr_training/training_interactions.tsv \
   --embeddings data/lr_training/training_embeddings.tsv \
   --output-dir models/universal_esmc300m_role_v0 \
-  --model lightgbm
+  --model lightgbm \
+  --validation-fraction 0.25
 
 uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr data/lr_training/training_interactions.tsv \
@@ -65,6 +66,12 @@ uv run --extra predict python scripts/train_lr_predictor.py \
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
 should use the ESMC backend from the `predict` extra.
+
+The role classifier trainer writes `model_card.json` and `model_card.md` with
+one-vs-rest positive/negative counts, prevalence, stratified holdout PR-AUC,
+ROC-AUC, top-K precision, and prevalence baseline deltas when each role has
+enough positive and negative proteins. Small or single-class roles are reported
+as skipped with a reason instead of inventing validation metrics.
 
 The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 

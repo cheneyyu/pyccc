@@ -21,6 +21,13 @@ The model card must include:
 The scaffolded trainer writes a minimal card:
 
 ```bash
+uv run --extra predict python scripts/train_role_classifier.py \
+  --training-lr data/lr_training/training_interactions.tsv \
+  --embeddings data/lr_training/training_embeddings.tsv \
+  --output-dir models/universal_esmc300m_role_v0 \
+  --model lightgbm \
+  --validation-fraction 0.25
+
 uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr normalized_lr.tsv \
   --embeddings embeddings.tsv \
@@ -39,6 +46,11 @@ random stratified split plus leakage-aware leave-species, leave-resource, and
 leave-family folds when those metadata are available. Leave-clade folds are
 also reported when a `clade` column is present and the split is requested.
 Unusable folds are kept in the report with a skip reason.
+
+Role classifier cards include one-vs-rest counts, role prevalence, stratified
+holdout PR-AUC/ROC-AUC/top-K precision when enough labels are available, and a
+prevalence PR-AUC baseline. Small or single-class roles are explicitly marked
+as skipped.
 
 Generated cards also record:
 
