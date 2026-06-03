@@ -152,6 +152,23 @@ def test_gene_symbols_key_supports_cellxgene_style_var_names():
     assert "TGFB1" in set(markers["gene"])
 
 
+def test_gene_symbols_key_accepts_categorical_symbols():
+    adata = make_adata()
+    adata.var["symbol"] = pd.Categorical(adata.var_names.astype(str))
+    adata.var_names = [f"ENSG{i:011d}" for i in range(adata.n_vars)]
+
+    res = pc.compute_communication(
+        adata,
+        "cell_type",
+        pc.toy_lr_table(),
+        gene_symbols_key="symbol",
+        min_pct=0.0,
+        aggregate="mean",
+    )
+
+    assert not res.interactions.empty
+
+
 def test_gene_symbols_key_validates_duplicate_symbols():
     adata = make_adata()
     adata.var["symbol"] = ["TGFB1", "TGFB1", "TGFBR2", "CXCR4", "CXCL12", "CD74"]

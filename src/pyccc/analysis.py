@@ -1107,7 +1107,8 @@ def _matrix_var_names(var: pd.DataFrame, fallback: pd.Index, *, gene_symbols_key
         return fallback
     if gene_symbols_key not in var:
         raise KeyError(f"`gene_symbols_key={gene_symbols_key!r}` is not present in adata.var.")
-    names = pd.Index(var[gene_symbols_key].fillna("").astype(str))
+    raw_names = var[gene_symbols_key].astype(object)
+    names = pd.Index(raw_names.where(pd.notna(raw_names), "").astype(str))
     if (names == "").any():
         raise ValueError(f"`adata.var[{gene_symbols_key!r}]` contains empty gene names.")
     duplicated = names[names.duplicated()].unique()

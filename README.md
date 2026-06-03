@@ -22,6 +22,41 @@ Representative CellChat-style outputs from the official human skin vignette:
 | --- | --- | --- |
 | ![Differential ligand-receptor bubble](docs/figures/differential_lr_bubble.png) | ![Pairwise pathway embedding](docs/figures/pairwise_pathway_embedding.png) | ![Outgoing role heatmap comparison](docs/figures/role_heatmap_compare_outgoing.png) |
 
+## Million-cell benchmark
+
+On the CELLxGENE
+[Human Immune Health Atlas](https://cellxgene.cziscience.com/e/e522d2cd-7927-4e59-a4ed-064009569279.cxg/)
+dataset, a 1,000,000-cell no-replacement sample from the top five shared
+CMV-infection-vs-normal blood cell types completes the same within-sample,
+differential, and matched visualization workflow faster through pyccc:
+
+![Real 1M-cell CCC benchmark](docs/figures/runtime_real1m_speedup.png)
+
+| Strategy | Total time | Speedup vs direct CellChat |
+| --- | ---: | ---: |
+| pyccc native plots | 47.0 s | 4.28x |
+| pyccc compute + CellChat R plots | 63.7 s | 3.16x |
+| direct CellChat R | 201.1 s | 1.00x |
+
+Reproduce the benchmark:
+
+```bash
+uv run python examples/three_way_runtime_benchmark.py \
+  --mode cellxgene \
+  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw \
+  --h5ad data/cellxgene/human_immune_health_atlas_1p82m.h5ad \
+  --use-raw \
+  --condition-key disease \
+  --condition-a "cytomegalovirus infection" \
+  --condition-b normal \
+  --groupby cell_type \
+  --gene-symbols-key feature_name \
+  --target-cells 1000000 \
+  --min-cells 125000 \
+  --n-groups 5 \
+  --timeout-seconds 600
+```
+
 ## Install
 
 ```bash

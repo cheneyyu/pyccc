@@ -208,11 +208,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aggregate", default="tri_mean")
     parser.add_argument("--cellchat-aggregate", default="triMean")
     parser.add_argument("--cofactor-adjust", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-raw", action=argparse.BooleanOptionalAction, default=False, help="Use adata.raw.X when loading CELLxGENE h5ad input.")
     parser.add_argument("--timeout-seconds", type=int, default=1200)
     parser.add_argument("--target-cells", type=int, default=1000000)
     parser.add_argument("--min-cells", type=int, default=25000)
-    parser.add_argument("--n-groups", type=int, default=12)
+    parser.add_argument("--n-groups", type=int, default=12, help="Number of shared groups to keep; use 0 to keep all shared groups.")
     parser.add_argument("--random-state", type=int, default=123)
+    parser.add_argument("--allow-repeated-cells", action="store_true", help="Allow upsampling by repeating cells when target cells exceed the real filtered dataset size.")
     parser.add_argument("--skip-direct-cellchat", action="store_true")
     return parser.parse_args()
 
@@ -240,7 +242,13 @@ def run_cellxgene_adaptive(args: argparse.Namespace, out_dir: Path) -> None:
     while attempt_cells >= int(args.min_cells):
         print(f"\n=== CELLxGENE adaptive attempt: {attempt_cells:,} cells ===", flush=True)
         attempt_dir = out_dir / f"cells_{attempt_cells}"
-        adata = scale_adata(base, attempt_cells, condition_key=args.condition_key, random_state=args.random_state)
+        adata = scale_adata(
+            base,
+            attempt_cells,
+            condition_key=args.condition_key,
+            random_state=args.random_state,
+            allow_repeated_cells=args.allow_repeated_cells,
+        )
         rows = run_three_way_for_adata(args, attempt_dir, adata, lr_db, lr_r, scale_label=f"cells_{adata.n_obs}")
         all_rows.append(rows)
         statuses = set(rows["status"].astype(str))
@@ -253,6 +261,7 @@ def run_cellxgene_adaptive(args: argparse.Namespace, out_dir: Path) -> None:
         summary = pd.concat(all_rows, ignore_index=True)
         summary.to_csv(out_dir / "adaptive_runtime.tsv", sep="\t", index=False)
         write_speedup_summary(summary, out_dir / "adaptive_summary.md")
+        write_runtime_plot(summary, out_dir / "runtime_speedup.png")
 
 
 def apply_defaults(args: argparse.Namespace, defaults: dict[str, str]) -> argparse.Namespace:
@@ -279,11 +288,16 @@ def load_lr(args: argparse.Namespace, adata) -> tuple[pc.CellChatDB, pd.DataFram
 def load_cellxgene_base(args: argparse.Namespace):
     backed = ad.read_h5ad(args.h5ad, backed="r")
     try:
+        source_var = backed.raw.var if args.use_raw and backed.raw is not None else backed.var
+        source_var_names = pd.Index(backed.raw.var_names) if args.use_raw and backed.raw is not None else backed.var_names
+        source_x = backed.raw.X if args.use_raw and backed.raw is not None else None
+        if args.use_raw and backed.raw is None:
+            raise ValueError("--use-raw was requested, but the h5ad does not contain adata.raw.")
         db = pc.load_cellchatdb(args.species, cache_dir=args.cache_dir)
         lr = db.interactions.copy()
         if args.annotation:
             lr = lr[lr["annotation"].astype(str).eq(args.annotation)].reset_index(drop=True)
-        matrix_names = analysis._matrix_var_names(backed.var, backed.var_names, gene_symbols_key=args.gene_symbols_key)
+        matrix_names = _matrix_var_names_allow_duplicates(source_var, source_var_names, gene_symbols_key=args.gene_symbols_key)
         gene_lookup = {str(gene).upper(): str(gene) for gene in matrix_names.astype(str)}
         lr = analysis._filter_lr_to_genes(lr, gene_lookup)
         selected = analysis._lr_expression_gene_candidates(lr, gene_lookup, include_cofactors=args.cofactor_adjust)
@@ -299,10 +313,15 @@ def load_cellxgene_base(args: argparse.Namespace):
         tab = pd.crosstab(cond, group)
         common = tab.columns[(tab.loc[args.condition_a] > 0) & (tab.loc[args.condition_b] > 0)]
         totals = (tab.loc[args.condition_a, common] + tab.loc[args.condition_b, common]).sort_values(ascending=False)
-        groups = totals.head(args.n_groups).index.astype(str).tolist()
+        groups = totals.index.astype(str).tolist() if args.n_groups <= 0 else totals.head(args.n_groups).index.astype(str).tolist()
         mask = cond.isin([args.condition_a, args.condition_b]).to_numpy() & group.isin(groups).to_numpy()
         cell_idx = np.flatnonzero(mask)
-        base = backed[cell_idx, gene_idx].to_memory()
+        if cell_idx.size == 0:
+            raise ValueError("No cells remain after condition and group filtering.")
+        if source_x is None:
+            base = backed[cell_idx, gene_idx].to_memory()
+        else:
+            base = ad.AnnData(source_x[cell_idx, :][:, gene_idx], obs=backed.obs.iloc[cell_idx].copy(), var=source_var.iloc[gene_idx].copy())
         base.var_names = pd.Index(symbol_values)
         base.var[args.gene_symbols_key] = symbol_values
         base.obs[args.condition_key] = base.obs[args.condition_key].astype(str)
@@ -349,7 +368,20 @@ def run_three_way_for_adata(
     frame = pd.DataFrame(rows)
     frame.to_csv(out_dir / "runtime.tsv", sep="\t", index=False)
     write_speedup_summary(frame, out_dir / "summary.md")
+    write_runtime_plot(frame, out_dir / "runtime_speedup.png")
     return frame
+
+
+def _matrix_var_names_allow_duplicates(var: pd.DataFrame, fallback: pd.Index, *, gene_symbols_key: str | None) -> pd.Index:
+    if gene_symbols_key is None:
+        return pd.Index(fallback)
+    if gene_symbols_key not in var:
+        raise KeyError(f"`gene_symbols_key={gene_symbols_key!r}` is not present in adata.var.")
+    raw_names = var[gene_symbols_key].astype(object)
+    names = pd.Index(raw_names.where(pd.notna(raw_names), "").astype(str))
+    if (names == "").any():
+        raise ValueError(f"`adata.var[{gene_symbols_key!r}]` contains empty gene names.")
+    return names
 
 
 def run_pyccc_python(args, out_dir: Path, adata, lr_db, lr_path, input_dir, scale_label: str) -> dict[str, object]:
@@ -483,11 +515,16 @@ def write_r_input(adata, out_dir: Path, *, groupby: str, condition_key: str, gen
     meta.to_csv(out_dir / "meta.tsv", sep="\t", index=False)
 
 
-def scale_adata(base, target_cells: int, *, condition_key: str, random_state: int):
+def scale_adata(base, target_cells: int, *, condition_key: str, random_state: int, allow_repeated_cells: bool):
     rng = np.random.default_rng(random_state)
     if target_cells <= base.n_obs:
         idx = rng.choice(np.arange(base.n_obs), size=target_cells, replace=False)
         return base[np.sort(idx), :].copy()
+    if not allow_repeated_cells:
+        raise ValueError(
+            f"Requested {target_cells:,} cells but only {base.n_obs:,} real filtered cells are available. "
+            "Increase --n-groups, lower --target-cells, or pass --allow-repeated-cells."
+        )
     full_repeats = target_cells // base.n_obs
     remainder = target_cells % base.n_obs
     x_parts = [base.X] * full_repeats
@@ -588,6 +625,77 @@ def write_speedup_summary(frame: pd.DataFrame, path: Path) -> None:
     lines.extend(["", "## Raw Rows", ""])
     lines.extend(["```text", frame.to_string(index=False), "```"])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_runtime_plot(frame: pd.DataFrame, path: Path) -> None:
+    ok = frame[frame["status"].eq("ok")].copy()
+    if ok.empty:
+        return
+    order = ["pyccc_python", "pyccc_cellchat_bridge", "direct_cellchat"]
+    if "scale_label" in ok:
+        labels = list(dict.fromkeys(ok["scale_label"].astype(str)))
+        for label in labels:
+            candidate = ok[ok["scale_label"].astype(str).eq(label)].copy()
+            if set(order).issubset(set(candidate["strategy"].astype(str))):
+                ok = candidate
+                break
+        else:
+            ok = ok[ok["scale_label"].astype(str).eq(labels[0])].copy()
+    ok["strategy"] = pd.Categorical(ok["strategy"], categories=order, ordered=True)
+    ok = ok.sort_values("strategy")
+    if ok.empty:
+        return
+    display = {
+        "pyccc_python": "pyccc native",
+        "pyccc_cellchat_bridge": "pyccc + CellChat R plots",
+        "direct_cellchat": "direct CellChat R",
+    }
+    colors = {
+        "pyccc_python": "#2C7FB8",
+        "pyccc_cellchat_bridge": "#41AB5D",
+        "direct_cellchat": "#D95F0E",
+    }
+    direct = ok.loc[ok["strategy"].astype(str).eq("direct_cellchat"), "total_seconds"]
+    direct_seconds = float(direct.iloc[0]) if not direct.empty else np.nan
+
+    fig, ax = plt.subplots(figsize=(7.4, 3.6), constrained_layout=True)
+    y = np.arange(len(ok))
+    ax.barh(y, ok["total_seconds"].astype(float), color=[colors[str(s)] for s in ok["strategy"]], height=0.62)
+    ax.set_yticks(y, [display.get(str(s), str(s)) for s in ok["strategy"]])
+    ax.invert_yaxis()
+    ax.set_xlabel("Total time for analysis + matched visualizations (seconds)")
+    ax.set_title("Real 1M-cell CCC benchmark")
+    ax.grid(axis="x", color="#D0D7DE", linewidth=0.8, alpha=0.8)
+    ax.set_axisbelow(True)
+    max_seconds = float(ok["total_seconds"].max())
+    for i, row in enumerate(ok.itertuples(index=False)):
+        seconds = float(row.total_seconds)
+        if np.isfinite(direct_seconds) and seconds > 0:
+            speedup = direct_seconds / seconds
+            label = f"{seconds:.1f}s, {speedup:.2f}x"
+        else:
+            label = f"{seconds:.1f}s"
+        ax.text(seconds + max_seconds * 0.025, i, label, va="center", ha="left", fontsize=9)
+    cells = int(ok["n_cells"].iloc[0])
+    genes = int(ok["n_genes"].iloc[0])
+    caption = (
+        f"Human Immune Health Atlas; {cells:,} real cells, {genes} LR/cofactor genes; "
+        "CMV infection vs normal, top 5 shared cell types"
+    )
+    ax.text(
+        0.0,
+        -0.26,
+        textwrap.fill(caption, width=88),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.5,
+        color="#4B5563",
+    )
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_xlim(0, max_seconds * 1.34)
+    fig.savefig(path, dpi=220, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

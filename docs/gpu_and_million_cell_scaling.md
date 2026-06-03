@@ -155,6 +155,47 @@ the main scaling pressure. A future cuDF path could help if users deliberately
 work with thousands of groups and retain very large long-form outputs, but it
 should stay optional.
 
+## Real 1M-cell CellChat Comparison
+
+The three-way runtime benchmark now uses the real CELLxGENE
+[Human Immune Health Atlas](https://cellxgene.cziscience.com/e/e522d2cd-7927-4e59-a4ed-064009569279.cxg/)
+h5ad rather than a repeated-cell expansion. The dataset contains 1,821,725
+blood cells with `disease` labels `normal` and `cytomegalovirus infection`.
+For CellChat compatibility, the benchmark uses `raw.X` because this h5ad's main
+`X` matrix is scaled and contains negative values.
+
+The benchmark command was:
+
+```bash
+.venv/bin/python examples/three_way_runtime_benchmark.py \
+  --mode cellxgene \
+  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw \
+  --h5ad data/cellxgene/human_immune_health_atlas_1p82m.h5ad \
+  --use-raw \
+  --condition-key disease \
+  --condition-a "cytomegalovirus infection" \
+  --condition-b normal \
+  --groupby cell_type \
+  --gene-symbols-key feature_name \
+  --target-cells 1000000 \
+  --min-cells 125000 \
+  --n-groups 5 \
+  --timeout-seconds 600
+```
+
+It keeps the top five cell types shared by the two conditions, which cover
+1,100,447 real cells, then samples 1,000,000 cells without replacement. The
+workflow includes within-sample CCC, two-sample differential CCC, and matched
+visual outputs for each strategy.
+
+| Strategy | Total time | Compute time | Plot/export/R time | Speedup vs direct CellChat |
+| --- | ---: | ---: | ---: | ---: |
+| pyccc native plots | 47.0 s | 45.6 s | 1.5 s | 4.28x |
+| pyccc compute + CellChat R plots | 63.7 s | 45.4 s | 18.3 s | 3.16x |
+| direct CellChat R | 201.1 s | 162.8 s | 3.9 s | 1.00x |
+
+![Real 1M-cell CCC benchmark](figures/runtime_real1m_speedup.png)
+
 ## Why CellChat Struggles At 1M-10M Cells
 
 The main CellChat scaling issue is not the final group-by-group CCC tensor. It
