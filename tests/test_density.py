@@ -41,3 +41,31 @@ def test_density_prior_and_predicted_lr_table_metadata():
 
     strict_gates = pc.evaluate_predicted_lr_density_prior(summary.assign(achieved_density=0.01), max_abs_delta=0.001, max_fold_error=1.1)
     assert not strict_gates.attrs["passed"]
+
+
+def test_density_prior_table_falls_back_to_median_when_clade_is_unmatched():
+    density = pd.DataFrame(
+        {
+            "clade": ["mammal", "plant"],
+            "density_prior": [0.2, 0.6],
+            "density_source_species": ["human;mouse", "rice"],
+            "density_source_resources": ["CellChatDB;OmniPath", "PlantCellChat"],
+        }
+    )
+    scores = pd.DataFrame(
+        {
+            "ligand_gene": [f"L{i}" for i in range(5) for _ in range(2)],
+            "receptor_gene": ["R1", "R2"] * 5,
+            "model_score": [1.0 - i * 0.05 for i in range(10)],
+        }
+    )
+
+    db = pc.build_predicted_lr_table(scores, density_prior=density, species_hint="unknown", min_score=0.0, max_pairs=10)
+    summary = db.metadata["prediction_summary"]
+
+    assert summary.loc[0, "density_prior"] == 0.4
+    assert summary.loc[0, "density_mode"] == "table_fallback_median"
+    assert summary.loc[0, "target_pair_count"] == 4
+    assert summary.loc[0, "selected_pair_count"] == 4
+    assert summary.loc[0, "density_source_species"] == "human;mouse;rice"
+    assert summary.loc[0, "density_source_resources"] == "CellChatDB;OmniPath;PlantCellChat"

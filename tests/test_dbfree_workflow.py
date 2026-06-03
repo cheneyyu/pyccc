@@ -23,7 +23,11 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
         role_model="heuristic",
         embedding_backend="hash",
         density_prior=1.0,
+        min_score=0.0,
         max_pairs=3,
+        max_pairs_per_ligand=1,
+        max_pairs_per_receptor=1,
+        allow_low_score_density_fill=True,
         expression_min_fraction=0.0,
     )
     result = pc.compute_communication(adata, "cell_type", predicted, gene_symbols_key="gene_id", min_pct=0.0, score_method="cellchat")
@@ -35,5 +39,10 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     assert "heuristic_role_model" in warnings
     assert "hash_embedding_backend" in warnings
     assert "prediction_summary" in predicted.metadata
-    assert "heuristic_role_model" in str(predicted.metadata["prediction_summary"].loc[0, "warning"])
+    summary = predicted.metadata["prediction_summary"]
+    assert "heuristic_role_model" in str(summary.loc[0, "warning"])
+    assert summary.loc[0, "min_score"] == 0.0
+    assert summary.loc[0, "max_pairs_per_ligand"] == 1
+    assert summary.loc[0, "max_pairs_per_receptor"] == 1
+    assert bool(summary.loc[0, "allow_low_score_density_fill"])
     assert not result.interactions.empty

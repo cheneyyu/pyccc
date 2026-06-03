@@ -177,6 +177,9 @@ def build_predicted_lr_table(
                 "score_threshold": float(out["model_score"].min()),
                 "min_score": min_score,
                 "max_pairs": max_pairs,
+                "max_pairs_per_ligand": max_pairs_per_ligand,
+                "max_pairs_per_receptor": max_pairs_per_receptor,
+                "allow_low_score_density_fill": bool(allow_low_score_density_fill),
                 "warning": ";".join(global_warnings),
             }
         ]
@@ -313,16 +316,41 @@ def _resolve_density_prior(density_prior: pd.DataFrame | float | str, *, species
         rho = 0.01
         return rho, {"density_prior": rho, "density_source_species": "", "density_source_resources": "", "density_mode": "auto_default"}
     frame = density_prior.copy()
+    if frame.empty:
+        raise ValueError("Density prior table is empty.")
+    if "density_prior" not in frame.columns:
+        raise ValueError("Density prior table must contain a `density_prior` column.")
     if species_hint in set(frame.get("clade", pd.Series(dtype=str)).astype(str)):
         row = frame[frame["clade"].astype(str) == str(species_hint)].iloc[0]
+        density_mode = "table"
     elif species_hint in set(frame.get("species_hint", pd.Series(dtype=str)).astype(str)):
         row = frame[frame["species_hint"].astype(str) == str(species_hint)].iloc[0]
+        density_mode = "table"
     else:
-        row = frame.iloc[0]
+        values = pd.to_numeric(frame["density_prior"], errors="coerce").dropna().to_numpy(dtype=float)
+        if len(values) == 0:
+            raise ValueError("Density prior table contains no finite `density_prior` values.")
+        rho = float(np.median(values))
+        return rho, {
+            "density_prior": rho,
+            "density_source_species": _join_semicolon_unique(frame.get("density_source_species", pd.Series(dtype=str))),
+            "density_source_resources": _join_semicolon_unique(frame.get("density_source_resources", pd.Series(dtype=str))),
+            "density_mode": "table_fallback_median",
+            "density_fallback_rows": int(len(frame)),
+        }
     rho = float(row["density_prior"])
     return rho, {
         "density_prior": rho,
         "density_source_species": str(row.get("density_source_species", "")),
         "density_source_resources": str(row.get("density_source_resources", "")),
-        "density_mode": "table",
+        "density_mode": density_mode,
     }
+
+
+def _join_semicolon_unique(values: pd.Series) -> str:
+    if values.empty:
+        return ""
+    parts = []
+    for value in values.dropna().astype(str):
+        parts.extend(part for part in str(value).split(";") if part)
+    return ";".join(sorted(set(parts)))

@@ -174,7 +174,10 @@ predicted_db = pc.predict_lr_dbfree(
     role_model="models/universal_esmc300m_role_v0",
     model="models/universal_esmc300m_lgbm_v0",
     density_prior="auto",
+    min_score=0.50,
     max_pairs=50000,
+    max_pairs_per_ligand=200,
+    max_pairs_per_receptor=200,
     cache_dir=".pyccc-cache",
 )
 
@@ -190,10 +193,17 @@ res = pc.compute_communication(
 `compute_communication` remains deterministic. It does not infer LR pairs
 silently; prediction is an explicit upstream step.
 
+`predict_lr_dbfree(...)` forwards density-threshold parameters to
+`build_predicted_lr_table(...)`, including `min_score`, `max_pairs`,
+`max_pairs_per_ligand`, `max_pairs_per_receptor`, and
+`allow_low_score_density_fill`.
+
 With `density_prior="auto"`, `predict_lr_dbfree(...)` first looks for
 `density_prior.tsv` in the LR ranker model directory and uses the row matching
-`species_hint` by `clade` when available. If no trained-model prior is present,
-it falls back to a conservative default density.
+`species_hint` by `clade` when available. If a density table exists but no row
+matches the target hint, pyccc falls back to the median prior across table rows
+and records `density_mode="table_fallback_median"`. If no trained-model prior
+is present, it falls back to a conservative default density.
 
 ## Limitations
 
