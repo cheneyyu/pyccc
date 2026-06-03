@@ -165,10 +165,28 @@ def _append_download_manifest(path: Path, new_rows: pd.DataFrame) -> pd.DataFram
         combined = pd.concat([old, new_rows], ignore_index=True)
     else:
         combined = new_rows.copy()
+    combined = _normalize_manifest_schema(combined)
     keys = [col for col in ("asset_type", "dataset", "section_id", "source_url") if col in combined.columns]
     if keys:
         combined = combined.drop_duplicates(keys, keep="last")
     return combined.sort_values([col for col in ("dataset", "section_id") if col in combined.columns]).reset_index(drop=True)
+
+
+def _normalize_manifest_schema(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    if "asset_type" not in out:
+        out["asset_type"] = ""
+    asset = out["asset_type"].fillna("").astype(str)
+    file_name = out.get("file_name", pd.Series([""] * len(out))).fillna("").astype(str)
+    section_id = out.get("section_id", pd.Series([""] * len(out))).fillna("").astype(str)
+    inferred = asset.copy()
+    inferred[(inferred == "") & file_name.str.endswith(".h5ad")] = "spatial_h5ad"
+    inferred[(inferred == "") & section_id.eq("proteome")] = "protein_fasta"
+    out["asset_type"] = inferred
+    for col in ("expected_bytes", "actual_bytes"):
+        if col in out:
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+    return out
 
 
 if __name__ == "__main__":

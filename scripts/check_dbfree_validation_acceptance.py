@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -43,8 +44,10 @@ def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[s
     if (results_dir / "section_qc.tsv").exists():
         qc = pd.read_csv(results_dir / "section_qc.tsv", sep="\t")
         rows.append(_gate(dataset, "data", "sections_load_as_anndata", not qc.empty and qc["spatial_key_found"].astype(bool).all(), f"n_sections={len(qc)}"))
+        rows.append(_required_sections_gate(manifest, qc))
         rows.append(_gate(dataset, "data", "standard_columns_present", _qc_standard_columns_pass(qc), "pyccc_group, section_id, spatial, gene_id recorded by prepare script"))
     rows.append(_gene_gate(manifest, results_dir))
+    rows.extend(_model_artifact_gates(manifest, results_dir))
     rows.append(_model_warning_gate(dataset, results_dir))
     if dataset == "artista_axolotl":
         rows.append(_artista_spatial_gate(dataset, results_dir))
@@ -58,6 +61,22 @@ def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[s
 def _qc_standard_columns_pass(qc: pd.DataFrame) -> bool:
     required = {"n_cells_or_bins", "n_genes", "n_groups", "spatial_key_found", "groupby_column_used", "n_expression_genes"}
     return required.issubset(qc.columns) and not qc.empty and (qc["n_groups"].astype(int) > 0).all()
+
+
+def _required_sections_gate(manifest: dict[str, object], qc: pd.DataFrame) -> dict[str, object]:
+    dataset = str(manifest["name"])
+    required = [str(item) for item in manifest.get("required_final_sections", [])]
+    if not required:
+        return _gate(dataset, "data", "required_final_sections_prepared", True, "no required_final_sections configured")
+    present = set(qc.get("section_id", pd.Series(dtype=str)).astype(str))
+    missing = [section for section in required if section not in present]
+    return _gate(
+        dataset,
+        "data",
+        "required_final_sections_prepared",
+        not missing,
+        f"required={','.join(required)}; missing={','.join(missing)}",
+    )
 
 
 def _gene_gate(manifest: dict[str, object], results_dir: Path) -> dict[str, object]:
@@ -79,6 +98,146 @@ def _model_warning_gate(dataset: str, results_dir: Path) -> dict[str, object]:
     warnings = ";".join(summary.get("warning", pd.Series(dtype=str)).fillna("").astype(str))
     bad = sorted(item for item in FORBIDDEN_FINAL_WARNINGS if item in warnings)
     return _gate(dataset, "model", "no_fixture_warnings", not bad, "forbidden=" + ",".join(bad))
+
+
+def _model_artifact_gates(manifest: dict[str, object], results_dir: Path) -> list[dict[str, object]]:
+    dataset = str(manifest["name"])
+    cfg = dict(manifest.get("prediction", {}))
+    role_dir = Path(str(cfg.get("role_model", "")))
+    pair_dir = Path(str(cfg.get("pair_model", "")))
+    role_card = _read_json(role_dir / "model_card.json")
+    pair_card = _read_json(pair_dir / "model_card.json")
+    density = _read_density(pair_dir / "density_prior.tsv")
+    rows = [
+        _gate(dataset, "model", "role_model_file_exists", (role_dir / "role_model.joblib").exists(), str(role_dir / "role_model.joblib")),
+        _gate(dataset, "model", "role_model_card_exists", role_card is not None, str(role_dir / "model_card.json")),
+        _gate(dataset, "model", "role_model_is_lightgbm", _card_value(role_card, "classifier") == "lightgbm", f"classifier={_card_value(role_card, 'classifier')}"),
+        _gate(dataset, "model", "role_model_uses_esmc300m", _embedding_model_is_esmc300m(role_card), _embedding_evidence(role_card)),
+        _gate(dataset, "model", "pair_model_file_exists", (pair_dir / "lr_link_model.joblib").exists(), str(pair_dir / "lr_link_model.joblib")),
+        _gate(dataset, "model", "pair_model_card_exists", pair_card is not None, str(pair_dir / "model_card.json")),
+        _gate(dataset, "model", "pair_model_is_lightgbm", _card_value(pair_card, "model_type") == "lightgbm", f"model_type={_card_value(pair_card, 'model_type')}"),
+        _gate(dataset, "model", "pair_model_uses_esmc300m", _embedding_model_is_esmc300m(pair_card), _embedding_evidence(pair_card)),
+        _gate(dataset, "model", "pair_model_training_metadata_present", _pair_training_metadata_present(pair_card), _pair_training_evidence(pair_card)),
+        _gate(dataset, "model", "density_prior_table_exists", density is not None and not density.empty, str(pair_dir / "density_prior.tsv")),
+        _gate(dataset, "model", "density_prior_has_manifest_clade", _density_has_clade(density, str(manifest.get("clade", ""))), f"clade={manifest.get('clade', '')}"),
+        _gate(dataset, "model", "validation_model_card_summary_exists", (results_dir / "validation_model_card.tsv").exists(), str(results_dir / "validation_model_card.tsv")),
+    ]
+    if (results_dir / "validation_model_card.tsv").exists():
+        summary = pd.read_csv(results_dir / "validation_model_card.tsv", sep="\t")
+        rows.append(
+            _gate(
+                dataset,
+                "model",
+                "validation_model_card_has_checksums",
+                _summary_checksums_present(summary),
+                _summary_checksum_evidence(summary),
+            )
+        )
+    else:
+        rows.append(_gate(dataset, "model", "validation_model_card_has_checksums", False, str(results_dir / "validation_model_card.tsv")))
+    return rows
+
+
+def _read_json(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _read_density(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path, sep="\t")
+    except Exception:
+        return None
+
+
+def _card_value(card: dict[str, object] | None, key: str) -> str:
+    if not isinstance(card, dict):
+        return ""
+    return str(card.get(key, ""))
+
+
+def _embedding_model_is_esmc300m(card: dict[str, object] | None) -> bool:
+    if not isinstance(card, dict):
+        return False
+    embedding = card.get("embedding_model", {})
+    if not isinstance(embedding, dict):
+        return False
+    model_names = _as_list(embedding.get("model_name"))
+    backends = {str(value).lower() for value in _as_list(embedding.get("embedding_backend"))}
+    names_ok = any("esmc" in str(name).lower() and "300m" in str(name).lower() for name in model_names)
+    backend_ok = "hash" not in backends
+    return bool(names_ok and backend_ok)
+
+
+def _embedding_evidence(card: dict[str, object] | None) -> str:
+    if not isinstance(card, dict):
+        return "missing model_card.json"
+    embedding = card.get("embedding_model", {})
+    if not isinstance(embedding, dict):
+        return "missing embedding_model"
+    return f"model_name={_join(_as_list(embedding.get('model_name')))}; backend={_join(_as_list(embedding.get('embedding_backend')))}"
+
+
+def _pair_training_metadata_present(card: dict[str, object] | None) -> bool:
+    if not isinstance(card, dict):
+        return False
+    required = ("training_resources", "species_included", "clades_included", "negative_strategy", "negative_sampling", "validation_report")
+    return all(bool(card.get(key)) for key in required)
+
+
+def _pair_training_evidence(card: dict[str, object] | None) -> str:
+    if not isinstance(card, dict):
+        return "missing model_card.json"
+    return (
+        f"resources={_join(_as_list(card.get('training_resources')))}; "
+        f"species={_join(_as_list(card.get('species_included')))}; "
+        f"clades={_join(_as_list(card.get('clades_included')))}; "
+        f"negative_strategy={card.get('negative_strategy', '')}"
+    )
+
+
+def _density_has_clade(density: pd.DataFrame | None, clade: str) -> bool:
+    if density is None or density.empty or not clade:
+        return False
+    if "clade" in density:
+        return clade in set(density["clade"].astype(str))
+    if "species_hint" in density:
+        return clade in set(density["species_hint"].astype(str))
+    return False
+
+
+def _summary_checksums_present(summary: pd.DataFrame) -> bool:
+    required = ("role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16")
+    return all(col in summary and summary[col].fillna("").astype(str).str.len().gt(0).all() for col in required)
+
+
+def _summary_checksum_evidence(summary: pd.DataFrame) -> str:
+    parts = []
+    for col in ("role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16"):
+        value = summary[col].iloc[0] if col in summary and not summary.empty else ""
+        parts.append(f"{col}={value}")
+    return "; ".join(parts)
+
+
+def _as_list(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _join(values: list[object]) -> str:
+    return ",".join(str(value) for value in values if str(value))
 
 
 def _artista_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:

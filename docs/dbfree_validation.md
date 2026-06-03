@@ -29,6 +29,10 @@ and `30DPI.h5ad`.
 The SOTA manifest uses the SOTA soybean download page for `SAM.spatial.h5ad`
 and `Leaf.spatial.h5ad`.
 
+`required_final_sections` records the sections that must be prepared before a
+publishable final run can pass acceptance: `Control_Juv`, `5DPI_1`, and
+`30DPI` for ARTISTA; `SAM` and `Leaf` for SOTA.
+
 Each manifest also records a target-species `protein_source`: URL, raw local
 FASTA path, gene-ID regex, optional gene-ID replacements, and isoform selection
 rule. `prepare_target_proteome.py` converts that raw source into the normalized

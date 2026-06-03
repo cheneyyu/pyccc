@@ -22,6 +22,7 @@
   "annotation_priority": ["cell_type", "celltype", "annotation", "anno", "cluster", "leiden"],
   "spatial_key": "spatial",
   "gene_id_key": "Gene",
+  "required_final_sections": ["Control_Juv", "5DPI_1", "30DPI"],
   "publishable_gene_match_min": 0.60,
   "sections": [
     {

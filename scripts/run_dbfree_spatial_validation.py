@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import anndata as ad
@@ -152,22 +153,86 @@ def _load_or_predict_lr(
 
 def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) -> None:
     cfg = dict(manifest.get("prediction", {}))
+    role_path = Path(str(cfg.get("role_model", "")))
+    pair_path = Path(str(cfg.get("pair_model", "")))
+    role_card = _read_json(role_path / "model_card.json")
+    pair_card = _read_json(pair_path / "model_card.json")
     rows = [
         {
             "dataset": manifest["name"],
             "embedding_model_name": cfg.get("embedding_model", pc.ESMC_300M_MODEL_NAME),
-            "role_model_path": cfg.get("role_model", ""),
-            "role_model_checksum16": checksum_short(Path(str(cfg.get("role_model", ""))) / "role_model.joblib"),
-            "pair_model_path": cfg.get("pair_model", ""),
-            "pair_model_checksum16": checksum_short(Path(str(cfg.get("pair_model", ""))) / "lr_link_model.joblib"),
+            "role_model_path": str(role_path),
+            "role_model_checksum16": checksum_short(role_path / "role_model.joblib"),
+            "role_model_card_checksum16": checksum_short(role_path / "model_card.json"),
+            "role_model_stack": _card_string(role_card, "model_stack"),
+            "role_model_classifier": _card_string(role_card, "classifier"),
+            "role_embedding_model_name": _embedding_card_value(role_card, "model_name"),
+            "role_embedding_model_revision": _embedding_card_value(role_card, "model_revision"),
+            "role_embedding_backend": _embedding_card_value(role_card, "embedding_backend"),
+            "pair_model_path": str(pair_path),
+            "pair_model_checksum16": checksum_short(pair_path / "lr_link_model.joblib"),
+            "pair_model_card_checksum16": checksum_short(pair_path / "model_card.json"),
+            "pair_model_stack": _card_string(pair_card, "model_stack"),
+            "pair_model_type": _card_string(pair_card, "model_type"),
+            "pair_embedding_model_name": _embedding_card_value(pair_card, "model_name"),
+            "pair_embedding_model_revision": _embedding_card_value(pair_card, "model_revision"),
+            "pair_embedding_backend": _embedding_card_value(pair_card, "embedding_backend"),
+            "density_prior_path": str(pair_path / "density_prior.tsv"),
+            "density_prior_checksum16": checksum_short(pair_path / "density_prior.tsv"),
             "density_prior": cfg.get("density_prior", "auto"),
-            "negative_sampling_strategy": "see pair model card",
-            "validation_split_summary": "see pair model card",
-            "training_resources": "see pair model card",
-            "species_clades_included": "see pair model card",
+            "density_prior_groupby": _card_string(pair_card, "density_prior_groupby"),
+            "negative_sampling_strategy": _card_string(pair_card, "negative_strategy"),
+            "validation_split_summary": _validation_split_summary(pair_card),
+            "training_resources": _join_card_list(pair_card, "training_resources"),
+            "species_included": _join_card_list(pair_card, "species_included"),
+            "clades_included": _join_card_list(pair_card, "clades_included"),
         }
     ]
     write_tsv(pd.DataFrame(rows), results_dir / "validation_model_card.tsv")
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _card_string(card: dict[str, object], key: str) -> str:
+    return str(card.get(key, "")) if isinstance(card, dict) else ""
+
+
+def _embedding_card_value(card: dict[str, object], key: str) -> str:
+    embedding = card.get("embedding_model", {}) if isinstance(card, dict) else {}
+    if not isinstance(embedding, dict):
+        return ""
+    return _join_values(embedding.get(key))
+
+
+def _join_card_list(card: dict[str, object], key: str) -> str:
+    return _join_values(card.get(key)) if isinstance(card, dict) else ""
+
+
+def _join_values(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return ";".join(str(item) for item in value if str(item))
+    return str(value)
+
+
+def _validation_split_summary(card: dict[str, object]) -> str:
+    report = card.get("validation_report", {}) if isinstance(card, dict) else {}
+    if not isinstance(report, dict):
+        return ""
+    parts = []
+    for split, item in sorted(report.items()):
+        if isinstance(item, dict):
+            parts.append(f"{split}:{item.get('status', 'unknown')}")
+    return ";".join(parts)
 
 
 def _baseline_lr(lr: pd.DataFrame, *, baseline: str, adata, gene_id_key: str) -> pd.DataFrame:

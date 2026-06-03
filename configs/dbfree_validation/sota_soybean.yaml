@@ -23,6 +23,7 @@
   "annotation_priority": ["cell_type", "celltype", "annotation", "spatial_cluster", "cluster", "leiden"],
   "spatial_key": "spatial",
   "gene_id_key": "gene_id",
+  "required_final_sections": ["SAM", "Leaf"],
   "publishable_gene_match_min": 0.70,
   "sections": [
     {

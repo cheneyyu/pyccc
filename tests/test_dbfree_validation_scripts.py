@@ -131,6 +131,8 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert (dataset_dir / "gene_protein_match.tsv").exists()
     assert normalized_fasta.exists()
     assert "gene=L1" in normalized_fasta.read_text(encoding="utf-8")
+    model_summary = pd.read_csv(dataset_dir / "validation_model_card.tsv", sep="\t")
+    assert {"role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16", "training_resources", "clades_included"}.issubset(model_summary.columns)
     assert (dataset_dir / "spatial_validation_summary.tsv").exists()
     assert (results / "baseline_comparison.tsv").exists()
     for ext in ("png", "svg", "pdf"):
@@ -140,6 +142,8 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     report = pd.read_csv(results / "acceptance_report.tsv", sep="\t")
     assert acceptance.returncode != 0
     assert {"data", "sequence", "model", "spatial", "figure", "reproducibility"}.issubset(set(report["category"]))
+    model_gates = set(report.loc[report["category"] == "model", "gate"])
+    assert {"role_model_file_exists", "pair_model_card_exists", "density_prior_table_exists", "validation_model_card_has_checksums"}.issubset(model_gates)
 
 
 def _run(script, *args):
