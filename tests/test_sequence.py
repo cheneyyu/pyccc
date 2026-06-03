@@ -1,3 +1,5 @@
+import gzip
+
 import numpy as np
 import pandas as pd
 from anndata import AnnData
@@ -32,3 +34,22 @@ def test_load_protein_fasta_and_match_expression_genes(tmp_path):
     assert proteins["protein_length"].tolist() == [8, 5]
     assert matched.set_index("gene_id").loc["G1", "in_expression"]
     assert not matched.set_index("gene_id").loc["G2", "in_expression"]
+
+
+def test_load_gzipped_protein_fasta_normalizes_gene_ids_and_selects_longest(tmp_path):
+    fasta = tmp_path / "protein.fa.gz"
+    with gzip.open(fasta, "wt", encoding="utf-8") as handle:
+        handle.write(
+            ">p1 OriGeneID=SoyZH13_01G000001\nMPEPTIDE\n"
+            ">p2 OriGeneID=SoyZH13_01G000001\nMPEPTIDEVV\n"
+            ">p3 OriGeneID=SoyZH13_01G000002\nMCCCC\n"
+        )
+
+    proteins = pc.load_protein_fasta(
+        fasta,
+        gene_id_regex=r"OriGeneID=(SoyZH13_\d+G\d+)",
+        gene_id_replacements=[(r"^SoyZH13_", "SoyZH13-")],
+    )
+
+    assert proteins["gene_id"].tolist() == ["SoyZH13-01G000001", "SoyZH13-01G000002"]
+    assert proteins.loc[proteins["gene_id"] == "SoyZH13-01G000001", "protein_id"].iloc[0] == "p2"

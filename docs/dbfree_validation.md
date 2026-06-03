@@ -29,6 +29,15 @@ and `30DPI.h5ad`.
 The SOTA manifest uses the SOTA soybean download page for `SAM.spatial.h5ad`
 and `Leaf.spatial.h5ad`.
 
+Each manifest also records a target-species `protein_source`: URL, raw local
+FASTA path, gene-ID regex, optional gene-ID replacements, and isoform selection
+rule. `prepare_target_proteome.py` converts that raw source into the normalized
+`protein_fasta` path used by prediction, with one longest protein per gene and
+headers rewritten as `gene=<expression_gene_id>`. When
+`restrict_to_expression` is enabled, that prediction FASTA is further limited
+to genes present in the prepared spatial sections, avoiding unnecessary
+ESMC-300M embedding of proteins that cannot enter the CCC analysis.
+
 ## Reproduce
 
 Run the same four scripts for each manifest:
@@ -36,6 +45,7 @@ Run the same four scripts for each manifest:
 ```bash
 uv run python scripts/download_dbfree_validation_data.py \
   --manifest configs/dbfree_validation/artista_axolotl.yaml \
+  --include-proteome \
   --smoke-only
 
 uv run python scripts/prepare_dbfree_validation_data.py \
@@ -43,8 +53,7 @@ uv run python scripts/prepare_dbfree_validation_data.py \
   --smoke-only
 
 uv run python scripts/prepare_target_proteome.py \
-  --manifest configs/dbfree_validation/artista_axolotl.yaml \
-  --protein-fasta data/proteomes/axolotl.longest_protein.fa
+  --manifest configs/dbfree_validation/artista_axolotl.yaml
 
 uv run python scripts/run_dbfree_spatial_validation.py \
   --manifest configs/dbfree_validation/artista_axolotl.yaml \

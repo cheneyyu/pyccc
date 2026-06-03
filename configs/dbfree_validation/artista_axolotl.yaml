@@ -9,6 +9,16 @@
   "data_dir": "data/dbfree_validation/artista_axolotl",
   "results_dir": "results/dbfree_validation/artista_axolotl",
   "protein_fasta": "data/proteomes/axolotl.longest_protein.fa",
+  "protein_source": {
+    "url": "https://www.axolotl-omics.org/api?method=Assembly.getSequences&assembly=47&type=protein",
+    "source_page": "https://www.axolotl-omics.org/assemblies",
+    "file_name": "AmexT_v47.PEPTIDES.fa.gz",
+    "local_path": "data/proteomes/raw/AmexT_v47.PEPTIDES.fa.gz",
+    "gene_id_regex": "gene_id \"([^\"]+)\"",
+    "protein_id_regex": "^([^;\\s]+)",
+    "select": "longest",
+    "restrict_to_expression": true
+  },
   "annotation_priority": ["cell_type", "celltype", "annotation", "anno", "cluster", "leiden"],
   "spatial_key": "spatial",
   "gene_id_key": "Gene",

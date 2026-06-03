@@ -9,6 +9,17 @@
   "data_dir": "data/dbfree_validation/sota_soybean",
   "results_dir": "results/dbfree_validation/sota_soybean",
   "protein_fasta": "data/proteomes/soybean.longest_protein.fa",
+  "protein_source": {
+    "url": "https://download.cncb.ac.cn/gwh/Plants/Glycine_max_Gmax_ZH13_v2.0_GWHAAEV00000000.1/GWHAAEV00000000.1.Protein.faa.gz",
+    "source_page": "https://ngdc.cncb.ac.cn/gwh/",
+    "file_name": "GWHAAEV00000000.1.Protein.faa.gz",
+    "local_path": "data/proteomes/raw/GWHAAEV00000000.1.Protein.faa.gz",
+    "gene_id_regex": "OriGeneID=(SoyZH13_\\d+G\\d+)",
+    "protein_id_regex": "^([^\\s]+)",
+    "gene_id_replacements": [["^SoyZH13_", "SoyZH13-"]],
+    "select": "longest",
+    "restrict_to_expression": true
+  },
   "annotation_priority": ["cell_type", "celltype", "annotation", "spatial_cluster", "cluster", "leiden"],
   "spatial_key": "spatial",
   "gene_id_key": "gene_id",

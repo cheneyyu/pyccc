@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import pandas as pd
 
@@ -81,6 +82,7 @@ def load_cds_translations(
     *,
     gene_id_regex: str | None = r"gene=([^\s]+)",
     transcript_id_regex: str | None = r"transcript=([^\s]+)",
+    gene_id_replacements: Sequence[tuple[str, str]] | None = None,
     genetic_code: int = 1,
     select: str = "longest",
 ) -> pd.DataFrame:
@@ -92,7 +94,7 @@ def load_cds_translations(
     for header, sequence in _read_fasta(path):
         cds = _clean_dna(sequence)
         transcript_id = _regex_or_default(transcript_id_regex, header, _first_token(header))
-        gene_id = _regex_or_default(gene_id_regex, header, transcript_id)
+        gene_id = _apply_replacements(_regex_or_default(gene_id_regex, header, transcript_id), gene_id_replacements)
         protein = _translate_cds(cds)
         stop_count = protein.count("*")
         valid = len(cds) > 0 and len(cds) % 3 == 0 and "N" not in cds and stop_count <= 1 and (stop_count == 0 or protein.endswith("*"))
@@ -121,6 +123,7 @@ def load_protein_fasta(
     *,
     gene_id_regex: str | None = r"gene=([^\s]+)",
     protein_id_regex: str | None = None,
+    gene_id_replacements: Sequence[tuple[str, str]] | None = None,
     select: str = "longest",
 ) -> pd.DataFrame:
     """Read protein FASTA and return the same protein table shape as CDS input."""
@@ -129,7 +132,7 @@ def load_protein_fasta(
     for header, sequence in _read_fasta(path):
         protein = _clean_protein(sequence)
         protein_id = _regex_or_default(protein_id_regex, header, _first_token(header))
-        gene_id = _regex_or_default(gene_id_regex, header, protein_id)
+        gene_id = _apply_replacements(_regex_or_default(gene_id_regex, header, protein_id), gene_id_replacements)
         records.append(
             {
                 "gene_id": gene_id,
@@ -187,7 +190,7 @@ def _select_isoforms(frame: pd.DataFrame, *, select: str) -> pd.DataFrame:
 def _read_fasta(path: str | Path) -> Iterable[tuple[str, str]]:
     header = None
     chunks: list[str] = []
-    with Path(path).open() as handle:
+    with _open_text(path) as handle:
         for line in handle:
             line = line.strip()
             if not line:
@@ -208,6 +211,20 @@ def _regex_or_default(pattern: str | None, text: str, default: str) -> str:
         return default
     match = re.search(pattern, text)
     return match.group(1) if match else default
+
+
+def _apply_replacements(value: str, replacements: Sequence[tuple[str, str]] | None) -> str:
+    out = str(value)
+    for pattern, replacement in replacements or ():
+        out = re.sub(pattern, replacement, out)
+    return out
+
+
+def _open_text(path: str | Path):
+    fasta_path = Path(path)
+    if fasta_path.suffix == ".gz":
+        return gzip.open(fasta_path, "rt")
+    return fasta_path.open()
 
 
 def _first_token(header: str) -> str:

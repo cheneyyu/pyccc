@@ -30,6 +30,7 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     adata.write_h5ad(source)
     fasta = tmp_path / "proteins.fa"
     fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVV\n>pX gene=X1\nMAAAA\n", encoding="utf-8")
+    normalized_fasta = tmp_path / "normalized" / "toy.longest_protein.fa"
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(
         json.dumps(
@@ -40,7 +41,14 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
                 "clade": "toy",
                 "technology": "toy spatial",
                 "source_page": "https://example.org/toy",
-                "protein_fasta": str(fasta),
+                "protein_fasta": str(normalized_fasta),
+                "protein_source": {
+                    "url": "https://example.org/proteins.fa",
+                    "local_path": str(fasta),
+                    "gene_id_regex": r"gene=([^\s]+)",
+                    "protein_id_regex": r"^([^\s]+)",
+                    "select": "longest",
+                },
                 "annotation_priority": ["annotation"],
                 "spatial_key": "spatial",
                 "gene_id_key": "gene_id",
@@ -121,6 +129,8 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert (results / "download_manifest.tsv").exists()
     assert (dataset_dir / "section_qc.tsv").exists()
     assert (dataset_dir / "gene_protein_match.tsv").exists()
+    assert normalized_fasta.exists()
+    assert "gene=L1" in normalized_fasta.read_text(encoding="utf-8")
     assert (dataset_dir / "spatial_validation_summary.tsv").exists()
     assert (results / "baseline_comparison.tsv").exists()
     for ext in ("png", "svg", "pdf"):

@@ -50,7 +50,11 @@ match = pc.match_expression_genes(adata, proteins, gene_id_key="gene_id")
 Protein FASTA is also supported:
 
 ```python
-proteins = pc.load_protein_fasta("species.longest_protein.fa")
+proteins = pc.load_protein_fasta(
+    "species.protein.fa.gz",
+    gene_id_regex=r"gene=([^\s]+)",
+    gene_id_replacements=[(r"^SoyZH13_", "SoyZH13-")],
+)
 ```
 
 `match_expression_genes(...)` reports both expression-only genes and
