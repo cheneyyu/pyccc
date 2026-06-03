@@ -6,10 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "pyccc contributors" }]
 license = { file = "LICENSE" }
+keywords = ["single-cell", "cell-cell communication", "CellChat", "AnnData", "Scanpy"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
@@ -35,6 +37,12 @@ ggplot = [
 interactive = [
     "plotly>=5.20",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cheneyyu/pyccc"
+Repository = "https://github.com/cheneyyu/pyccc"
+Issues = "https://github.com/cheneyyu/pyccc/issues"
+Documentation = "https://github.com/cheneyyu/pyccc#readme"
 
 [build-system]
 requires = ["hatchling"]

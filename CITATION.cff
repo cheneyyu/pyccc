@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use pyccc in a scientific analysis, please cite the repository and archive the exact version used."
+title: "pyccc: AnnData-native CellChat-like cell-cell communication analysis and plotting"
+version: 0.1.0
+date-released: 2026-06-03
+authors:
+  - name: "pyccc contributors"
+license: MIT
+repository-code: "https://github.com/cheneyyu/pyccc"
+url: "https://github.com/cheneyyu/pyccc"
+keywords:
+  - single-cell RNA-seq
+  - cell-cell communication
+  - CellChat
+  - AnnData
+  - Scanpy

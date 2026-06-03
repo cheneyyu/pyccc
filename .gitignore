@@ -21,3 +21,4 @@ cellchat_reference_comparison/
 *.html
 !docs/**/*.png
 !docs/**/*.svg
+!docs/**/*.pdf
