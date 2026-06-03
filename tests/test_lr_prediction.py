@@ -38,6 +38,9 @@ def _fixture_training():
                 np.array([0.7, 0.1, 0.2], dtype=np.float32),
             ],
             "sequence_length": [100, 120, 130, 140, 300, 330, 340, 350],
+            "model_name": ["biohub/ESMC-300M"] * 8,
+            "model_revision": ["fixture-rev"] * 8,
+            "pooling": ["mean"] * 8,
         }
     )
     return interactions, embeddings
@@ -158,6 +161,12 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["metrics"]["n_negative"] > 0
     assert card["negative_sampling"]["negative_strategy"] == "pu_degree_matched"
     assert card["negative_sampling"]["excluded_homology_radius"] == "family_pair"
+    assert card["species_included"] == ["toy_a", "toy_b"]
+    assert card["training_resources"] == ["fixture_a", "fixture_b"]
+    assert card["embedding_model"]["model_name"] == ["biohub/ESMC-300M"]
+    assert card["embedding_model"]["model_revision"] == ["fixture-rev"]
+    assert card["embedding_model"]["pooling"] == ["mean"]
+    assert card["pair_model_params"]["max_iter"] == 100
     assert card["final_model_training"] == "all_pairs_after_validation"
     assert card["validation_feature_encoder_fit"] == "train_split_only"
     assert card["calibration_method"] in {"isotonic", "skipped"}

@@ -59,6 +59,9 @@ Generated cards also record:
 
 - `final_model_training = all_pairs_after_validation`,
 - `validation_feature_encoder_fit = train_split_only`,
+- training resources, species/clades included, positive-label and
+  pseudo-negative counts by species,
+- ESMC embedding model name/revision/pooling and final pair-model parameters,
 - calibration method and calibration metrics,
 - Brier score and 10-bin expected calibration error when calibration is usable.
 - baseline PR-AUC comparisons for degree prior, embedding cosine, role-only,

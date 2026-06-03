@@ -153,6 +153,7 @@ def train_lr_link_predictor(
         "negative_strategy": negative_strategy,
         "negative_sampling": _negative_sampling_summary(pairs),
     }
+    training_metadata = _training_metadata(interactions, embeddings, pairs)
     validation_report = _validation_report(
         pairs,
         embeddings,
@@ -202,6 +203,13 @@ def train_lr_link_predictor(
         "calibration_metrics": calibration["metrics"],
         "validation_splits": list(validation_splits),
         "metrics": metrics,
+        "training_resources": training_metadata["training_resources"],
+        "species_included": training_metadata["species_included"],
+        "clades_included": training_metadata["clades_included"],
+        "positive_labels_by_species": training_metadata["positive_labels_by_species"],
+        "pseudo_negatives_by_species": training_metadata["pseudo_negatives_by_species"],
+        "embedding_model": training_metadata["embedding_model"],
+        "pair_model_params": _pair_model_params(model, random_state=random_state),
         "validation_report": validation_report,
         "negative_strategy": negative_strategy,
         "negative_ratio": negative_ratio,
@@ -956,6 +964,36 @@ def _negative_sampling_summary(pairs: pd.DataFrame) -> dict[str, object]:
     }
 
 
+def _training_metadata(interactions: pd.DataFrame, embeddings: pd.DataFrame, pairs: pd.DataFrame) -> dict[str, object]:
+    positives = pairs[pairs["label"].astype(int) == 1].copy()
+    negatives = pairs[pairs["label"].astype(int) == 0].copy()
+    return {
+        "training_resources": _sorted_strings(interactions.get("resource", pd.Series(dtype=str))),
+        "species_included": _sorted_strings(interactions.get("species", pd.Series(dtype=str))),
+        "clades_included": _sorted_strings(interactions.get("clade", pd.Series(dtype=str))),
+        "positive_labels_by_species": _count_by(positives, "species"),
+        "pseudo_negatives_by_species": _count_by(negatives, "species"),
+        "embedding_model": {
+            "model_name": _sorted_strings(embeddings.get("model_name", pd.Series(dtype=str))),
+            "model_revision": _sorted_strings(embeddings.get("model_revision", pd.Series(dtype=str))),
+            "pooling": _sorted_strings(embeddings.get("pooling", pd.Series(dtype=str))),
+            "n_embeddings": int(len(embeddings)),
+        },
+    }
+
+
+def _sorted_strings(values: pd.Series) -> list[str]:
+    if values.empty:
+        return []
+    return sorted({str(value) for value in values.dropna().astype(str) if str(value)})
+
+
+def _count_by(frame: pd.DataFrame, column: str) -> dict[str, int]:
+    if frame.empty or column not in frame.columns:
+        return {}
+    return {str(k): int(v) for k, v in frame[column].astype(str).value_counts().sort_index().items()}
+
+
 def _degree_pool(values: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     counts = values.astype(str).value_counts()
     genes = counts.index.to_numpy(dtype=str)
@@ -1335,30 +1373,39 @@ def _fold_summary(folds: Sequence[dict[str, object]]) -> dict[str, object]:
 
 
 def _fit_pair_model(model: str, X: np.ndarray, y: np.ndarray, *, random_state: int):
+    params = _pair_model_params(model, random_state=random_state)
     if model == "lightgbm":
         try:
             import lightgbm as lgb
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("Install LR prediction support with `pyccc[predict]` to train LightGBM models.") from exc
-        clf = lgb.LGBMClassifier(
-            objective="binary",
-            n_estimators=300,
-            learning_rate=0.03,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            class_weight="balanced",
-            random_state=random_state,
-            verbose=-1,
-        )
+        clf = lgb.LGBMClassifier(**params)
     elif model == "sklearn":
         from sklearn.ensemble import HistGradientBoostingClassifier
 
-        clf = HistGradientBoostingClassifier(random_state=random_state, max_iter=100)
+        clf = HistGradientBoostingClassifier(**params)
     else:
         raise ValueError("`model` must be one of: lightgbm, sklearn.")
     clf.fit(X, y)
     return clf
+
+
+def _pair_model_params(model: str, *, random_state: int) -> dict[str, object]:
+    if model == "lightgbm":
+        return {
+            "objective": "binary",
+            "n_estimators": 300,
+            "learning_rate": 0.03,
+            "num_leaves": 31,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "class_weight": "balanced",
+            "random_state": int(random_state),
+            "verbose": -1,
+        }
+    if model == "sklearn":
+        return {"random_state": int(random_state), "max_iter": 100}
+    raise ValueError("`model` must be one of: lightgbm, sklearn.")
 
 
 def _predict_scores(model, X: np.ndarray) -> np.ndarray:
@@ -1403,6 +1450,8 @@ def _model_card_markdown(card: dict[str, object]) -> str:
         f"- Excluded homology radius: `{card.get('excluded_homology_radius', '')}`",
         f"- Validation splits requested: {', '.join(card['validation_splits'])}",
         f"- Random split PR-AUC: {card['metrics']['pr_auc']:.4f}",
+        f"- Species included: {', '.join(card.get('species_included', [])) or 'not recorded'}",
+        f"- Training resources: {', '.join(card.get('training_resources', [])) or 'not recorded'}",
         "",
         "## Validation Summary",
         "",
@@ -1435,6 +1484,20 @@ def _model_card_markdown(card: dict[str, object]) -> str:
                 f"- Easy pseudo-negatives: {sampling.get('easy_negative_count', 0)}",
                 f"- Degree matching: {sampling.get('degree_matching', False)}",
                 f"- Homology exclusion: `{sampling.get('excluded_homology_radius', '')}`",
+            ]
+        )
+    embedding_model = card.get("embedding_model", {})
+    if isinstance(embedding_model, dict):
+        lines.extend(
+            [
+                "",
+                "## Model Stack",
+                "",
+                f"- Embedding model: {', '.join(embedding_model.get('model_name', [])) or 'not recorded'}",
+                f"- Embedding revision: {', '.join(embedding_model.get('model_revision', [])) or 'not recorded'}",
+                f"- Embedding pooling: {', '.join(embedding_model.get('pooling', [])) or 'not recorded'}",
+                f"- Embeddings: {embedding_model.get('n_embeddings', 0)}",
+                f"- Pair model parameters: `{json.dumps(card.get('pair_model_params', {}), sort_keys=True)}`",
             ]
         )
     if card.get("calibration_metrics"):
