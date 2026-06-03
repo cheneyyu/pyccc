@@ -38,3 +38,10 @@ random stratified split plus leakage-aware leave-species, leave-resource, and
 leave-family folds when those metadata are available. Leave-clade folds are
 also reported when a `clade` column is present and the split is requested.
 Unusable folds are kept in the report with a skip reason.
+
+Generated cards also record:
+
+- `final_model_training = all_pairs_after_validation`,
+- `validation_feature_encoder_fit = train_split_only`,
+- calibration method and calibration metrics,
+- Brier score and 10-bin expected calibration error when calibration is usable.

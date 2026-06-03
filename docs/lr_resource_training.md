@@ -60,6 +60,10 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - leave-family-out folds when ligand/receptor family labels are present,
 - leave-clade-out folds when a `clade` column is present and requested,
 - PR-AUC, ROC-AUC, and top-K precision at K = 100, 500, 1000, and 5000.
+- held-out probability calibration using isotonic regression by default,
+- a final deployment model refit on all training pairs after validation.
 
 Folds that cannot contain both positive and pseudo-negative labels are reported
-as skipped instead of silently inflating the validation result.
+as skipped instead of silently inflating the validation result. The PCA feature
+encoder is fit inside each training fold for validation, then refit on all
+pairs only for the final serialized model.

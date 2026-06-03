@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from joblib import load
 
 import pyccc as pc
 
@@ -53,7 +54,12 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
 
     assert (tmp_path / "lr_link_model.joblib").exists()
     assert (tmp_path / "model_card.md").exists()
+    payload = load(tmp_path / "lr_link_model.joblib")
+    assert "calibrator" in payload
     assert card["metrics"]["n_positive"] == 4
+    assert card["final_model_training"] == "all_pairs_after_validation"
+    assert card["validation_feature_encoder_fit"] == "train_split_only"
+    assert card["calibration_method"] in {"isotonic", "skipped"}
     assert "leave_species_out" in card["validation_report"]
     assert "leave_resource_out" in card["validation_report"]
     assert "leave_family_out" in card["validation_report"]
@@ -62,6 +68,7 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_resource_out"]["status"] == "ok"
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
+    assert {"model_score", "calibrated_probability"}.issubset(scores.columns)
     assert scores.loc[0, "model_score"] >= 0.0
 
 

@@ -84,6 +84,10 @@ scores = pc.score_lr_candidates(
 )
 ```
 
+`model_score` is the raw rank score used for top-K density filtering.
+`calibrated_probability` is produced by the held-out calibrator when the saved
+model includes one; otherwise it falls back to `model_score`.
+
 Users can bypass role prediction with explicit candidates:
 
 ```python

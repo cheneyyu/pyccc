@@ -85,43 +85,68 @@ def train_lr_link_predictor(
     negative_strategy: str = "pu_degree_matched",
     output_dir: str | Path,
     negative_ratio: int = 5,
+    calibration_method: str | None = "isotonic",
     random_state: int = 0,
 ) -> dict[str, object]:
     """Train a pairwise LR link predictor and write a model card."""
 
     from joblib import dump
-    from sklearn.metrics import average_precision_score, roc_auc_score
 
     interactions = getattr(training_table, "interactions", training_table)
     pairs = _training_pairs(interactions, negative_ratio=negative_ratio, random_state=random_state)
-    features = make_lr_pair_features(pairs, embeddings, encoder=feature_encoder, fit_pca=True)
     y = pairs["label"].astype(int).to_numpy()
     if len(np.unique(y)) < 2:
         raise ValueError("Training requires at least one positive and one pseudo-negative pair.")
     train_idx, test_idx = _random_train_test_indices(y, random_state=random_state)
-    clf = _fit_pair_model(model, features.X[train_idx], y[train_idx], random_state=random_state)
-    scores = _predict_scores(clf, features.X[test_idx])
+    random_metrics = _evaluate_pair_split(
+        pairs,
+        embeddings,
+        y,
+        train_idx,
+        test_idx,
+        model=model,
+        feature_encoder=feature_encoder,
+        random_state=random_state,
+    )
     metrics = {
-        "pr_auc": float(average_precision_score(y[test_idx], scores)),
-        "roc_auc": _safe_roc_auc(y[test_idx], scores, roc_auc_score),
+        "pr_auc": float(random_metrics["pr_auc"]),
+        "roc_auc": float(random_metrics["roc_auc"]),
         "n_pairs": int(len(y)),
         "n_positive": int(y.sum()),
         "negative_strategy": negative_strategy,
     }
     validation_report = _validation_report(
         pairs,
-        features.X,
+        embeddings,
         y,
         requested_splits=validation_splits,
         model=model,
+        feature_encoder=feature_encoder,
+        random_state=random_state,
+    )
+    features = make_lr_pair_features(pairs, embeddings, encoder=feature_encoder, fit_pca=True)
+    clf = _fit_pair_model(model, features.X, y, random_state=random_state)
+    calibration = _fit_calibrator_from_split(
+        pairs,
+        embeddings,
+        y,
+        train_idx,
+        test_idx,
+        model=model,
+        feature_encoder=feature_encoder,
+        method=calibration_method,
         random_state=random_state,
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    dump({"model": clf, "pca_model": features.pca_model, "feature_encoder": feature_encoder, "feature_names": features.feature_names}, output / "lr_link_model.joblib")
+    dump({"model": clf, "pca_model": features.pca_model, "feature_encoder": feature_encoder, "feature_names": features.feature_names, "calibrator": calibration["calibrator"]}, output / "lr_link_model.joblib")
     card = {
         "model_type": model,
         "feature_encoder": feature_encoder,
+        "final_model_training": "all_pairs_after_validation",
+        "validation_feature_encoder_fit": "train_split_only",
+        "calibration_method": calibration["method"],
+        "calibration_metrics": calibration["metrics"],
         "validation_splits": list(validation_splits),
         "metrics": metrics,
         "validation_report": validation_report,
@@ -159,7 +184,7 @@ def score_lr_candidates(
         chunk = pairs.iloc[start : start + batch_size].copy()
         features = make_lr_pair_features(chunk, embeddings, encoder=payload["feature_encoder"], pca_model=payload.get("pca_model"))
         chunk["model_score"] = _predict_scores(payload["model"], features.X)
-        chunk["calibrated_probability"] = chunk["model_score"]
+        chunk["calibrated_probability"] = _apply_calibrator(payload.get("calibrator"), chunk["model_score"].to_numpy(dtype=float))
         rows.append(chunk)
     return pd.concat(rows, ignore_index=True).sort_values("model_score", ascending=False).reset_index(drop=True)
 
@@ -337,26 +362,27 @@ def _random_train_test_indices(y: np.ndarray, *, random_state: int) -> tuple[np.
 
 def _validation_report(
     pairs: pd.DataFrame,
-    X: np.ndarray,
+    embeddings: pd.DataFrame,
     y: np.ndarray,
     *,
     requested_splits: Sequence[str],
     model: str,
+    feature_encoder: str,
     random_state: int,
 ) -> dict[str, object]:
     report: dict[str, object] = {}
     train_idx, test_idx = _random_train_test_indices(y, random_state=random_state)
-    report["random_stratified"] = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+    report["random_stratified"] = _evaluate_pair_split(pairs, embeddings, y, train_idx, test_idx, model=model, feature_encoder=feature_encoder, random_state=random_state)
     for split in requested_splits:
         if split == "leave_species_out":
-            report[split] = _leave_one_group_report(pairs, X, y, group_col="species", model=model, random_state=random_state)
+            report[split] = _leave_one_group_report(pairs, embeddings, y, group_col="species", model=model, feature_encoder=feature_encoder, random_state=random_state)
         elif split == "leave_resource_out":
-            report[split] = _leave_one_group_report(pairs, X, y, group_col="resource", model=model, random_state=random_state)
+            report[split] = _leave_one_group_report(pairs, embeddings, y, group_col="resource", model=model, feature_encoder=feature_encoder, random_state=random_state)
         elif split == "leave_family_out":
-            report[split] = _leave_family_report(pairs, X, y, model=model, random_state=random_state)
+            report[split] = _leave_family_report(pairs, embeddings, y, model=model, feature_encoder=feature_encoder, random_state=random_state)
         elif split == "leave_clade_out":
             if "clade" in pairs.columns:
-                report[split] = _leave_one_group_report(pairs, X, y, group_col="clade", model=model, random_state=random_state)
+                report[split] = _leave_one_group_report(pairs, embeddings, y, group_col="clade", model=model, feature_encoder=feature_encoder, random_state=random_state)
             else:
                 report[split] = {"status": "skipped", "reason": "Pair table has no `clade` column."}
         else:
@@ -366,11 +392,12 @@ def _validation_report(
 
 def _leave_one_group_report(
     pairs: pd.DataFrame,
-    X: np.ndarray,
+    embeddings: pd.DataFrame,
     y: np.ndarray,
     *,
     group_col: str,
     model: str,
+    feature_encoder: str,
     random_state: int,
 ) -> dict[str, object]:
     if group_col not in pairs.columns:
@@ -379,7 +406,7 @@ def _leave_one_group_report(
     for group in sorted(set(pairs[group_col].astype(str))):
         test_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() == str(group))
         train_idx = np.flatnonzero(pairs[group_col].astype(str).to_numpy() != str(group))
-        fold = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+        fold = _evaluate_pair_split(pairs, embeddings, y, train_idx, test_idx, model=model, feature_encoder=feature_encoder, random_state=random_state)
         fold["held_out"] = str(group)
         folds.append(fold)
     usable = [fold for fold in folds if fold["status"] == "ok"]
@@ -388,10 +415,11 @@ def _leave_one_group_report(
 
 def _leave_family_report(
     pairs: pd.DataFrame,
-    X: np.ndarray,
+    embeddings: pd.DataFrame,
     y: np.ndarray,
     *,
     model: str,
+    feature_encoder: str,
     random_state: int,
 ) -> dict[str, object]:
     if "ligand_family" not in pairs.columns or "receptor_family" not in pairs.columns:
@@ -411,20 +439,22 @@ def _leave_family_report(
         mask = family.map(lambda values: group in values).to_numpy(dtype=bool)
         test_idx = np.flatnonzero(mask)
         train_idx = np.flatnonzero(~mask)
-        fold = _evaluate_split(X, y, train_idx, test_idx, model=model, random_state=random_state)
+        fold = _evaluate_pair_split(pairs, embeddings, y, train_idx, test_idx, model=model, feature_encoder=feature_encoder, random_state=random_state)
         fold["held_out"] = str(group)
         folds.append(fold)
     usable = [fold for fold in folds if fold["status"] == "ok"]
     return {"status": "ok" if usable else "skipped", "folds": folds, "summary": _fold_summary(usable)}
 
 
-def _evaluate_split(
-    X: np.ndarray,
+def _evaluate_pair_split(
+    pairs: pd.DataFrame,
+    embeddings: pd.DataFrame,
     y: np.ndarray,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
     *,
     model: str,
+    feature_encoder: str,
     random_state: int,
 ) -> dict[str, object]:
     from sklearn.metrics import average_precision_score, roc_auc_score
@@ -437,8 +467,10 @@ def _evaluate_split(
         return {"status": "skipped", "reason": "Training split has fewer than two classes.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
     if len(np.unique(y_test)) < 2:
         return {"status": "skipped", "reason": "Test split has fewer than two classes.", "n_train": int(len(train_idx)), "n_test": int(len(test_idx))}
-    clf = _fit_pair_model(model, X[train_idx], y_train, random_state=random_state)
-    scores = _predict_scores(clf, X[test_idx])
+    train_features = make_lr_pair_features(pairs.iloc[train_idx], embeddings, encoder=feature_encoder, fit_pca=True)
+    test_features = make_lr_pair_features(pairs.iloc[test_idx], embeddings, encoder=feature_encoder, pca_model=train_features.pca_model)
+    clf = _fit_pair_model(model, train_features.X, y_train, random_state=random_state)
+    scores = _predict_scores(clf, test_features.X)
     return {
         "status": "ok",
         "n_train": int(len(train_idx)),
@@ -448,7 +480,87 @@ def _evaluate_split(
         "pr_auc": float(average_precision_score(y_test, scores)),
         "roc_auc": _safe_roc_auc(y_test, scores, roc_auc_score),
         "top_k_precision": _top_k_precision(y_test, scores, ks=(100, 500, 1000, 5000)),
+        "feature_encoder_fit": "train_split_only",
     }
+
+
+def _fit_calibrator_from_split(
+    pairs: pd.DataFrame,
+    embeddings: pd.DataFrame,
+    y: np.ndarray,
+    train_idx: np.ndarray,
+    calib_idx: np.ndarray,
+    *,
+    model: str,
+    feature_encoder: str,
+    method: str | None,
+    random_state: int,
+) -> dict[str, object]:
+    if method is None or method == "none":
+        return {"method": "none", "calibrator": None, "metrics": {}}
+    y_train = y[train_idx]
+    y_calib = y[calib_idx]
+    if len(np.unique(y_train)) < 2 or len(np.unique(y_calib)) < 2:
+        return {"method": "skipped", "calibrator": None, "metrics": {"reason": "Calibration split has fewer than two classes."}}
+    train_features = make_lr_pair_features(pairs.iloc[train_idx], embeddings, encoder=feature_encoder, fit_pca=True)
+    calib_features = make_lr_pair_features(pairs.iloc[calib_idx], embeddings, encoder=feature_encoder, pca_model=train_features.pca_model)
+    clf = _fit_pair_model(model, train_features.X, y_train, random_state=random_state)
+    raw = _predict_scores(clf, calib_features.X)
+    calibrator = _fit_calibrator(raw, y_calib, method=method, random_state=random_state)
+    calibrated = _apply_calibrator(calibrator, raw)
+    metrics = {
+        "brier_score": _brier_score(y_calib, calibrated),
+        "ece_10bin": _expected_calibration_error(y_calib, calibrated, n_bins=10),
+        "n_calibration": int(len(y_calib)),
+        "n_calibration_positive": int(y_calib.sum()),
+    }
+    return {"method": method, "calibrator": calibrator, "metrics": metrics}
+
+
+def _fit_calibrator(raw_scores: np.ndarray, y: np.ndarray, *, method: str, random_state: int):
+    raw_scores = np.asarray(raw_scores, dtype=float)
+    y = np.asarray(y, dtype=int)
+    if method == "isotonic":
+        from sklearn.isotonic import IsotonicRegression
+
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(raw_scores, y)
+        return calibrator
+    if method == "sigmoid":
+        from sklearn.linear_model import LogisticRegression
+
+        calibrator = LogisticRegression(random_state=random_state)
+        calibrator.fit(raw_scores.reshape(-1, 1), y)
+        return calibrator
+    raise ValueError("`calibration_method` must be one of: isotonic, sigmoid, none.")
+
+
+def _apply_calibrator(calibrator, raw_scores: np.ndarray) -> np.ndarray:
+    raw_scores = np.asarray(raw_scores, dtype=float)
+    if calibrator is None:
+        return raw_scores
+    if hasattr(calibrator, "predict_proba"):
+        return np.asarray(calibrator.predict_proba(raw_scores.reshape(-1, 1))[:, 1], dtype=float)
+    return np.asarray(calibrator.predict(raw_scores), dtype=float)
+
+
+def _brier_score(y_true: np.ndarray, probabilities: np.ndarray) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    return float(np.mean((probabilities - y_true) ** 2))
+
+
+def _expected_calibration_error(y_true: np.ndarray, probabilities: np.ndarray, *, n_bins: int) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for lo, hi in zip(bins[:-1], bins[1:], strict=True):
+        mask = (probabilities >= lo) & (probabilities < hi if hi < 1.0 else probabilities <= hi)
+        if not mask.any():
+            continue
+        ece += float(mask.mean()) * abs(float(probabilities[mask].mean()) - float(y_true[mask].mean()))
+    return float(ece)
 
 
 def _top_k_precision(y_true: np.ndarray, scores: np.ndarray, *, ks: Sequence[int]) -> dict[str, float]:
@@ -526,6 +638,9 @@ def _model_card_markdown(card: dict[str, object]) -> str:
         "",
         f"- Model type: `{card['model_type']}`",
         f"- Feature encoder: `{card['feature_encoder']}`",
+        f"- Final model training: `{card['final_model_training']}`",
+        f"- Validation feature encoder fit: `{card['validation_feature_encoder_fit']}`",
+        f"- Calibration method: `{card['calibration_method']}`",
         f"- Negative strategy: `{card['negative_strategy']}`",
         f"- Negative ratio: `{card['negative_ratio']}`",
         f"- Validation splits requested: {', '.join(card['validation_splits'])}",
@@ -544,6 +659,16 @@ def _model_card_markdown(card: dict[str, object]) -> str:
             lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}")
         else:
             lines.append(f"- `{name}`: skipped ({item.get('reason', 'no usable folds')})")
+    if card.get("calibration_metrics"):
+        lines.extend(
+            [
+                "",
+                "## Calibration",
+                "",
+                f"- Brier score: {float(card['calibration_metrics'].get('brier_score', float('nan'))):.4f}",
+                f"- ECE 10-bin: {float(card['calibration_metrics'].get('ece_10bin', float('nan'))):.4f}",
+            ]
+        )
     lines.extend(
         [
             "",
