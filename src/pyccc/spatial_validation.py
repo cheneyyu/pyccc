@@ -19,6 +19,7 @@ class SpatialValidationReport:
     celltype_pair_summary: pd.DataFrame
     null_distribution: pd.DataFrame
     distance_decay: pd.DataFrame
+    section_reproducibility: pd.DataFrame
     metadata: dict[str, object]
 
 
@@ -36,6 +37,8 @@ def validate_spatial_lr_table(
     null_models: Sequence[str] = ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"),
     random_state: int | None = 0,
     gene_symbols_key: str | None = None,
+    section_key: str | None = None,
+    section_top_k: int = 100,
 ) -> SpatialValidationReport:
     """Validate candidate LR scores against simple spatial null models."""
 
@@ -43,6 +46,8 @@ def validate_spatial_lr_table(
         raise KeyError(f"`{spatial_key}` is not present in adata.obsm.")
     if groupby not in adata.obs:
         raise KeyError(f"`{groupby}` is not present in adata.obs.")
+    if section_key is not None and section_key not in adata.obs:
+        raise KeyError(f"`{section_key}` is not present in adata.obs.")
     coords = np.asarray(adata.obsm[spatial_key], dtype=float)
     if coords.ndim != 2 or coords.shape[1] < 2:
         raise ValueError("Spatial coordinates must be a two-dimensional array with at least two columns.")
@@ -62,8 +67,28 @@ def validate_spatial_lr_table(
     null = _null_distribution(lr, adata, coords, groups, gene_names, expr_means, gene_expression, radius_value, sigma_value, distance_kernels, null_models, n_permutations, random_state)
     summary = _attach_null_stats(summary, null)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
-    metadata = {"mode": mode, "radius": radius_value, "sigma": sigma_value, "null_models": list(null_models), "n_permutations": n_permutations}
-    return SpatialValidationReport(summary, observed, null, distance_decay, metadata)
+    section_reproducibility = _section_reproducibility(
+        adata,
+        coords,
+        groups,
+        lr,
+        gene_names,
+        radius=radius_value,
+        sigma=sigma_value,
+        kernels=distance_kernels,
+        section_key=section_key,
+        section_top_k=section_top_k,
+    )
+    metadata = {
+        "mode": mode,
+        "radius": radius_value,
+        "sigma": sigma_value,
+        "null_models": list(null_models),
+        "n_permutations": n_permutations,
+        "section_key": section_key,
+        "section_top_k": int(section_top_k),
+    }
+    return SpatialValidationReport(summary, observed, null, distance_decay, section_reproducibility, metadata)
 
 
 def _gene_names(adata, *, gene_symbols_key: str | None) -> pd.Index:
@@ -98,11 +123,18 @@ def _resolve_sigma(coords: np.ndarray, sigma: str | float, *, fallback: float) -
     return float(max(fallback, 1e-9))
 
 
-def _group_expression_means(adata, groups: np.ndarray, gene_names: pd.Index, genes: Sequence[str]) -> pd.DataFrame:
+def _group_expression_means(
+    adata,
+    groups: np.ndarray,
+    gene_names: pd.Index,
+    genes: Sequence[str],
+    *,
+    cell_mask: np.ndarray | None = None,
+) -> pd.DataFrame:
     gene_lookup = {gene: i for i, gene in enumerate(gene_names)}
     cols = [gene_lookup[gene] for gene in genes if gene in gene_lookup]
     selected_genes = [gene for gene in genes if gene in gene_lookup]
-    x = adata.X[:, cols]
+    x = adata.X[:, cols] if cell_mask is None else adata.X[np.asarray(cell_mask, dtype=bool)][:, cols]
     rows = []
     for group in sorted(set(groups)):
         mask = groups == group
@@ -338,3 +370,73 @@ def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, ex
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _section_reproducibility(
+    adata,
+    coords: np.ndarray,
+    groups: np.ndarray,
+    lr: pd.DataFrame,
+    gene_names: pd.Index,
+    *,
+    radius: float,
+    sigma: float,
+    kernels: Sequence[str],
+    section_key: str | None,
+    section_top_k: int,
+) -> pd.DataFrame:
+    columns = [
+        "ligand",
+        "receptor",
+        "kernel",
+        "n_sections",
+        "section_spatial_ccc_score_mean",
+        "section_spatial_ccc_score_sd",
+        "section_spatial_ccc_score_cv",
+        "section_model_weighted_spatial_ccc_score_mean",
+        "section_model_weighted_spatial_ccc_score_sd",
+        "positive_section_fraction",
+        "top_k_section_fraction",
+        "median_section_rank",
+    ]
+    if section_key is None:
+        return pd.DataFrame(columns=columns)
+    sections = adata.obs[section_key].astype(str).to_numpy()
+    genes = sorted(set(lr["ligand"]).union(set(lr["receptor"])))
+    rows = []
+    for section in sorted(set(sections)):
+        mask = sections == section
+        if int(mask.sum()) < 2:
+            continue
+        section_groups = groups[mask]
+        if len(set(section_groups)) == 0:
+            continue
+        expr_means = _group_expression_means(adata, section_groups, gene_names, genes, cell_mask=mask)
+        weights = _spatial_weight_tables(coords[mask], section_groups, radius=radius, sigma=sigma, kernels=kernels)
+        observed = _score_lr_spatial(lr, expr_means, weights)
+        if observed.empty:
+            continue
+        section_summary = observed.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(
+            spatial_ccc_score=("spatial_ccc_score", "mean"),
+            model_weighted_spatial_ccc_score=("model_weighted_spatial_ccc_score", "mean"),
+        )
+        section_summary["section"] = str(section)
+        section_summary["section_rank"] = section_summary.groupby("kernel")["model_weighted_spatial_ccc_score"].rank(method="min", ascending=False)
+        section_summary["section_top_k"] = section_summary["section_rank"] <= max(int(section_top_k), 1)
+        rows.append(section_summary)
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    per_section = pd.concat(rows, ignore_index=True)
+    out = per_section.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(
+        n_sections=("section", "nunique"),
+        section_spatial_ccc_score_mean=("spatial_ccc_score", "mean"),
+        section_spatial_ccc_score_sd=("spatial_ccc_score", "std"),
+        section_model_weighted_spatial_ccc_score_mean=("model_weighted_spatial_ccc_score", "mean"),
+        section_model_weighted_spatial_ccc_score_sd=("model_weighted_spatial_ccc_score", "std"),
+        positive_section_fraction=("spatial_ccc_score", lambda values: float((values > 0).mean())),
+        top_k_section_fraction=("section_top_k", "mean"),
+        median_section_rank=("section_rank", "median"),
+    )
+    denom = out["section_spatial_ccc_score_mean"].abs().replace(0, np.nan)
+    out["section_spatial_ccc_score_cv"] = out["section_spatial_ccc_score_sd"] / denom
+    return out[columns]

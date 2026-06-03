@@ -21,6 +21,7 @@ report = pc.validate_spatial_lr_table(
     radius="auto",
     sigma="auto",
     n_permutations=1000,
+    section_key="section_id",
 )
 ```
 
@@ -30,6 +31,7 @@ The report contains:
 - `celltype_pair_summary`: source-target scores by LR pair and kernel,
 - `null_distribution`: permutation scores,
 - `distance_decay`: distance-bin metadata,
+- `section_reproducibility`: optional cross-section reproducibility summaries,
 - `metadata`: radius, sigma, null model, and permutation settings.
 
 Supported kernels:
@@ -55,3 +57,10 @@ reports distance-bin summaries with `mean_spatial_ccc_score` for each LR pair.
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the
 median cell area; otherwise it uses the median nearest-neighbor distance.
+
+When `section_key` is provided, pyccc recomputes observed spatial scores within
+each section or sample and reports `n_sections`, cross-section score mean and
+standard deviation, positive-section fraction, top-K-section fraction, and
+median section rank for each LR pair and kernel. This is a reproducibility
+summary; the null p-values remain computed from the full object unless you run
+validation separately per section.
