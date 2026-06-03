@@ -91,6 +91,9 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     strict_gates = pc.evaluate_lr_model_quality_gates(tmp_path, required_splits=["leave_species_out"], min_pr_auc_delta=2.0)
     assert not strict_gates.attrs["passed"]
     assert {"model_score", "calibrated_probability"}.issubset(scores.columns)
+    assert {"nearest_reference_ligand", "nearest_reference_receptor", "nearest_reference_species", "nearest_reference_resource"}.issubset(scores.columns)
+    assert scores.loc[0, "nearest_reference_ligand"] != ""
+    assert np.isfinite(scores.loc[0, "nearest_reference_distance"])
     assert scores.loc[0, "model_score"] >= 0.0
 
 

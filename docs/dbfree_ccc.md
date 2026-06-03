@@ -128,9 +128,19 @@ predicted_db = pc.build_predicted_lr_table(
 
 The output is a normal `CellChatDB` object. It includes `model_score`,
 `calibrated_probability`, `density_prior`, `density_rank`, confidence,
-provenance columns, and prediction summary metadata. The summary also records
-the target pair count, capped target count, achieved density, density delta, and
-density ratio.
+provenance columns, nearest-reference annotations, warnings, and prediction
+summary metadata. The summary also records the target pair count, capped target
+count, achieved density, density delta, and density ratio.
+
+When a trained pair ranker is used, `score_lr_candidates(...)` annotates each
+candidate with the nearest curated positive LR pair in the ranker feature
+space: `nearest_reference_ligand`, `nearest_reference_receptor`,
+`nearest_reference_lr`, `nearest_reference_species`,
+`nearest_reference_resource`, `nearest_reference_pathway`, and
+`nearest_reference_distance`. The primary pathway remains
+`DB-free predicted`; nearest-reference pathway is interpretive provenance only.
+The `warning` column records fallback choices such as heuristic rankers,
+heuristic role models, hash embeddings, or default density priors.
 
 Check whether the selected table remains close to the prior:
 

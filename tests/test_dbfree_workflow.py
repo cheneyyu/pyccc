@@ -29,5 +29,11 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     result = pc.compute_communication(adata, "cell_type", predicted, gene_symbols_key="gene_id", min_pct=0.0, score_method="cellchat")
 
     assert not predicted.interactions.empty
-    assert {"model_score", "density_rank", "evidence_type"}.issubset(predicted.interactions.columns)
+    assert {"model_score", "density_rank", "evidence_type", "warning", "nearest_reference_ligand"}.issubset(predicted.interactions.columns)
+    warnings = ";".join(predicted.interactions["warning"].astype(str))
+    assert "heuristic_pair_ranker" in warnings
+    assert "heuristic_role_model" in warnings
+    assert "hash_embedding_backend" in warnings
+    assert "prediction_summary" in predicted.metadata
+    assert "heuristic_role_model" in str(predicted.metadata["prediction_summary"].loc[0, "warning"])
     assert not result.interactions.empty

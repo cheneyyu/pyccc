@@ -51,6 +51,8 @@ Generated cards also record:
 - `density_prior.tsv` next to the serialized LightGBM pair ranker, so
   DB-free prediction can apply a clade-aware density prior with
   `density_prior="auto"`.
+- a capped reference index of curated positive LR pairs, used only to annotate
+  predicted pairs with nearest-reference provenance.
 
 Use `pc.evaluate_lr_model_quality_gates(...)` to turn the model card into a
 check table. It reports model PR-AUC, baseline PR-AUC, optional top-K precision

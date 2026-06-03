@@ -87,6 +87,7 @@ def train_lr_link_predictor(
     negative_ratio: int = 5,
     calibration_method: str | None = "isotonic",
     density_groupby: str = "clade",
+    max_reference_pairs: int = 20000,
     random_state: int = 0,
 ) -> dict[str, object]:
     """Train a pairwise LR link predictor and write a model card."""
@@ -132,6 +133,7 @@ def train_lr_link_predictor(
     )
     features = make_lr_pair_features(pairs, embeddings, encoder=feature_encoder, fit_pca=True)
     clf = _fit_pair_model(model, features.X, y, random_state=random_state)
+    reference = _reference_annotation_payload(pairs, features.X, max_reference_pairs=max_reference_pairs, random_state=random_state)
     calibration = _fit_calibrator_from_split(
         pairs,
         embeddings,
@@ -145,7 +147,18 @@ def train_lr_link_predictor(
     )
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    dump({"model": clf, "pca_model": features.pca_model, "feature_encoder": feature_encoder, "feature_names": features.feature_names, "calibrator": calibration["calibrator"]}, output / "lr_link_model.joblib")
+    dump(
+        {
+            "model": clf,
+            "pca_model": features.pca_model,
+            "feature_encoder": feature_encoder,
+            "feature_names": features.feature_names,
+            "calibrator": calibration["calibrator"],
+            "reference_pairs": reference["pairs"],
+            "reference_features": reference["features"],
+        },
+        output / "lr_link_model.joblib",
+    )
     density_prior = _write_density_prior(interactions, output, groupby=density_groupby)
     card = {
         "model_type": model,
@@ -278,6 +291,7 @@ def score_lr_candidates(
         out["model_score"] = _heuristic_pair_scores(out, embeddings)
         out["calibrated_probability"] = out["model_score"]
         out["model_name"] = "heuristic_fixture"
+        out["warning"] = _append_warning(out.get("warning", pd.Series([""] * len(out))), ["heuristic_pair_ranker"])
         return out.sort_values("model_score", ascending=False).reset_index(drop=True)
 
     from joblib import load
@@ -289,6 +303,7 @@ def score_lr_candidates(
         features = make_lr_pair_features(chunk, embeddings, encoder=payload["feature_encoder"], pca_model=payload.get("pca_model"))
         chunk["model_score"] = _predict_scores(payload["model"], features.X)
         chunk["calibrated_probability"] = _apply_calibrator(payload.get("calibrator"), chunk["model_score"].to_numpy(dtype=float))
+        chunk = _annotate_nearest_reference(chunk, features.X, payload)
         rows.append(chunk)
     return pd.concat(rows, ignore_index=True).sort_values("model_score", ascending=False).reset_index(drop=True)
 
@@ -341,6 +356,13 @@ def predict_lr_dbfree(
     )
     db.metadata["proteins"] = proteins
     db.metadata["embeddings"] = emb
+    extra_warnings = []
+    if str(role_model) == "heuristic":
+        extra_warnings.append("heuristic_role_model")
+    if embedding_backend == "hash":
+        extra_warnings.append("hash_embedding_backend")
+    if extra_warnings:
+        _add_prediction_warnings(db, extra_warnings)
     return db
 
 
@@ -366,6 +388,84 @@ def _auto_density_prior(density_prior: pd.DataFrame | float | str, model: str | 
     if table_path.exists():
         return pd.read_csv(table_path, sep="\t")
     return density_prior
+
+
+def _reference_annotation_payload(
+    pairs: pd.DataFrame,
+    X: np.ndarray,
+    *,
+    max_reference_pairs: int,
+    random_state: int,
+) -> dict[str, object]:
+    positives = pairs[pairs["label"].astype(int) == 1].copy()
+    if positives.empty:
+        return {"pairs": pd.DataFrame(), "features": np.empty((0, X.shape[1]), dtype=np.float32)}
+    if len(positives) > max_reference_pairs:
+        positives = positives.sample(n=max_reference_pairs, random_state=random_state)
+    idx = positives.index.to_numpy(dtype=int)
+    cols = [col for col in ("ligand_gene", "receptor_gene", "species", "resource", "pathway", "annotation") if col in positives.columns]
+    return {
+        "pairs": positives[cols].reset_index(drop=True),
+        "features": np.asarray(X[idx], dtype=np.float32),
+    }
+
+
+def _annotate_nearest_reference(chunk: pd.DataFrame, X: np.ndarray, payload: dict[str, object]) -> pd.DataFrame:
+    ref_pairs = payload.get("reference_pairs")
+    ref_features = payload.get("reference_features")
+    if not isinstance(ref_pairs, pd.DataFrame) or ref_pairs.empty or ref_features is None or len(ref_features) == 0:
+        out = chunk.copy()
+        out["warning"] = _append_warning(out.get("warning", pd.Series([""] * len(out))), ["nearest_reference_unavailable"])
+        return out
+    ref_X = np.asarray(ref_features, dtype=np.float32)
+    nearest_idx, nearest_dist = _nearest_reference_indices(np.asarray(X, dtype=np.float32), ref_X)
+    out = chunk.copy()
+    nearest = ref_pairs.iloc[nearest_idx].reset_index(drop=True)
+    out["nearest_reference_ligand"] = nearest.get("ligand_gene", pd.Series([""] * len(out))).astype(str).to_numpy()
+    out["nearest_reference_receptor"] = nearest.get("receptor_gene", pd.Series([""] * len(out))).astype(str).to_numpy()
+    out["nearest_reference_lr"] = out["nearest_reference_ligand"].astype(str) + "->" + out["nearest_reference_receptor"].astype(str)
+    out["nearest_reference_species"] = nearest.get("species", pd.Series([""] * len(out))).astype(str).to_numpy()
+    out["nearest_reference_resource"] = nearest.get("resource", pd.Series([""] * len(out))).astype(str).to_numpy()
+    out["nearest_reference_pathway"] = nearest.get("pathway", pd.Series([""] * len(out))).astype(str).to_numpy()
+    out["nearest_reference_distance"] = nearest_dist.astype(float)
+    return out
+
+
+def _nearest_reference_indices(X: np.ndarray, ref_X: np.ndarray, *, block_size: int = 512) -> tuple[np.ndarray, np.ndarray]:
+    ref_norm = np.sum(ref_X * ref_X, axis=1)
+    best_idx = np.zeros(X.shape[0], dtype=int)
+    best_dist = np.full(X.shape[0], np.inf, dtype=np.float64)
+    for start in range(0, X.shape[0], block_size):
+        stop = min(start + block_size, X.shape[0])
+        block = X[start:stop]
+        dist = np.sum(block * block, axis=1)[:, None] + ref_norm[None, :] - 2.0 * block @ ref_X.T
+        dist = np.maximum(dist, 0.0)
+        idx = np.argmin(dist, axis=1)
+        best_idx[start:stop] = idx
+        best_dist[start:stop] = np.sqrt(dist[np.arange(stop - start), idx])
+    return best_idx, best_dist
+
+
+def _add_prediction_warnings(db, warnings_: Sequence[str]) -> None:
+    db.interactions["warning"] = _append_warning(db.interactions.get("warning", pd.Series([""] * db.interactions.shape[0])), warnings_)
+    summary = db.metadata.get("prediction_summary")
+    if isinstance(summary, pd.DataFrame) and not summary.empty:
+        summary["warning"] = _append_warning(summary.get("warning", pd.Series([""] * len(summary))), warnings_)
+
+
+def _append_warning(values: pd.Series, warnings_: Sequence[str]) -> pd.Series:
+    clean = [str(item) for item in warnings_ if str(item)]
+    if not clean:
+        return values.fillna("").astype(str)
+
+    def combine(value) -> str:
+        parts = [part for part in str(value or "").split(";") if part]
+        for warning in clean:
+            if warning not in parts:
+                parts.append(warning)
+        return ";".join(parts)
+
+    return values.fillna("").map(combine)
 
 
 def _expressed_gene_fractions(adata, *, gene_id_key: str | None) -> pd.DataFrame:
@@ -503,6 +603,9 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
     for col in ("ligand_role_score", "receptor_role_score"):
         if col not in out.columns:
             out[col] = ""
+    for col in ("pathway", "annotation"):
+        if col not in out.columns:
+            out[col] = ""
     family_aliases = {
         "ligand_family": ("ligand_family", "ligand_protein_family", "ligand_homology_cluster", "homology_cluster"),
         "receptor_family": ("receptor_family", "receptor_protein_family", "receptor_homology_cluster", "homology_cluster"),
@@ -515,7 +618,19 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
                     break
         if canonical not in out.columns:
             out[canonical] = ""
-    cols = ["species", "clade", "resource", "ligand_gene", "receptor_gene", "ligand_family", "receptor_family", "ligand_role_score", "receptor_role_score"]
+    cols = [
+        "species",
+        "clade",
+        "resource",
+        "ligand_gene",
+        "receptor_gene",
+        "ligand_family",
+        "receptor_family",
+        "ligand_role_score",
+        "receptor_role_score",
+        "pathway",
+        "annotation",
+    ]
     out = out[cols].drop_duplicates().copy()
     for col in cols:
         out[col] = out[col].fillna("").astype(str)

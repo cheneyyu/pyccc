@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -115,6 +116,14 @@ def build_predicted_lr_table(
     selected["confidence"] = selected.get("calibrated_probability", selected["model_score"]).astype(float)
     if "calibrated_probability" not in selected.columns:
         selected["calibrated_probability"] = selected["model_score"]
+    global_warnings = []
+    if str(density_meta.get("density_mode", "")) == "auto_default":
+        global_warnings.append("auto_default_density_prior")
+    if len(selected) < k_target:
+        global_warnings.append("density_target_not_reached")
+    if "heuristic" in str(model_name):
+        global_warnings.append("heuristic_pair_ranker")
+    warnings_out = _append_warning(selected.get("warning", pd.Series([""] * len(selected))), global_warnings)
     out = pd.DataFrame(
         {
             "ligand": selected["ligand_gene"].astype(str),
@@ -140,7 +149,9 @@ def build_predicted_lr_table(
             "nearest_reference_lr": selected.get("nearest_reference_lr", pd.Series([""] * len(selected))).astype(str),
             "nearest_reference_species": selected.get("nearest_reference_species", pd.Series([""] * len(selected))).astype(str),
             "nearest_reference_resource": selected.get("nearest_reference_resource", pd.Series([""] * len(selected))).astype(str),
-            "warning": selected.get("warning", pd.Series([""] * len(selected))).astype(str),
+            "nearest_reference_pathway": selected.get("nearest_reference_pathway", pd.Series([""] * len(selected))).astype(str),
+            "nearest_reference_distance": pd.to_numeric(selected.get("nearest_reference_distance", pd.Series([np.nan] * len(selected))), errors="coerce"),
+            "warning": warnings_out.astype(str),
         }
     )
     summary = pd.DataFrame(
@@ -160,6 +171,7 @@ def build_predicted_lr_table(
                 "score_threshold": float(out["model_score"].min()),
                 "min_score": min_score,
                 "max_pairs": max_pairs,
+                "warning": ";".join(global_warnings),
             }
         ]
     )
@@ -225,6 +237,21 @@ def _summary(values: np.ndarray, *, stat: str) -> float:
             values = np.sort(values)[1:-1]
         return float(np.median(values))
     raise ValueError("`stat` must be one of: median, mean, trimmed_median.")
+
+
+def _append_warning(values: pd.Series, warnings_: Sequence[str]) -> pd.Series:
+    clean = [str(item) for item in warnings_ if str(item)]
+    if not clean:
+        return values.fillna("").astype(str)
+
+    def combine(value) -> str:
+        parts = [part for part in str(value or "").split(";") if part]
+        for warning in clean:
+            if warning not in parts:
+                parts.append(warning)
+        return ";".join(parts)
+
+    return values.fillna("").map(combine)
 
 
 def _prediction_summary_frame(predicted_db: CellChatDB | pd.DataFrame | dict[str, object] | str | Path) -> pd.DataFrame:
