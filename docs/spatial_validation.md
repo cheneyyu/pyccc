@@ -23,6 +23,7 @@ report = pc.validate_spatial_lr_table(
     n_permutations=1000,
     section_key="section_id",
     top_k=(100, 500, 1000),
+    curated_lr_table=curated_db,  # optional same-species curated reference
 )
 ```
 
@@ -38,6 +39,8 @@ The report contains:
 - `role_kernel_enrichment`: optional role-aware summaries that compare
   secreted-like pairs under the `exp` kernel and membrane/contact-like pairs
   under the `contact` kernel against role-score background pairs,
+- `curated_overlap_enrichment`: optional curated-overlap summaries when a
+  same-species curated LR table is supplied,
 - `metadata`: radius, sigma, null model, and permutation settings.
 
 Supported kernels:
@@ -71,6 +74,10 @@ If predicted LR tables contain `ligand_secreted_like_score`,
 `role_kernel_enrichment` reports whether secreted-like pairs are preferentially
 enriched under the diffusion-style `exp` kernel and whether membrane/contact-like
 pairs are enriched under the `contact` kernel.
+When `curated_lr_table` is provided, pyccc marks predicted LR pairs that overlap
+the curated table in `summary["curated_overlap"]` and reports whether those
+overlapping pairs have stronger spatial scores than non-overlapping predicted
+pairs in `curated_overlap_enrichment`.
 
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the

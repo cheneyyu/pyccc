@@ -28,8 +28,17 @@ def test_spatial_validation_reports_null_statistics():
             "receptor_membrane_like_score": [0.8, 0.2],
         }
     )
+    curated_lr = pd.DataFrame({"ligand": ["L1"], "receptor": ["R1"], "pathway": ["curated"]})
 
-    report = pc.validate_spatial_lr_table(adata, lr, groupby="cell_type", n_permutations=3, section_key="section", section_top_k=1)
+    report = pc.validate_spatial_lr_table(
+        adata,
+        lr,
+        groupby="cell_type",
+        n_permutations=3,
+        section_key="section",
+        section_top_k=1,
+        curated_lr_table=curated_lr,
+    )
 
     assert not report.summary.empty
     assert not report.celltype_pair_summary.empty
@@ -39,6 +48,8 @@ def test_spatial_validation_reports_null_statistics():
     assert not report.top_k_enrichment.empty
     assert report.role_kernel_enrichment is not None
     assert not report.role_kernel_enrichment.empty
+    assert report.curated_overlap_enrichment is not None
+    assert not report.curated_overlap_enrichment.empty
     assert {"role_class", "kernel", "role_kernel_enrichment", "n_role_pairs"}.issubset(report.role_kernel_enrichment.columns)
     assert {("secreted_like", "exp"), ("membrane_contact_like", "contact")}.issubset(
         set(zip(report.role_kernel_enrichment["role_class"], report.role_kernel_enrichment["kernel"], strict=True))
@@ -56,11 +67,15 @@ def test_spatial_validation_reports_null_statistics():
     assert matched["matched_ligand"].notna().any()
     assert "empirical_pvalue" in report.summary.columns
     assert "model_weighted_empirical_pvalue" in report.summary.columns
+    assert "curated_overlap" in report.summary.columns
+    assert report.summary.groupby(["ligand", "receptor"])["curated_overlap"].first().to_dict() == {("L1", "R1"): True, ("L2", "R2"): False}
+    assert {"n_curated_overlap_pairs", "curated_overlap_enrichment", "curated_overlap_fraction"}.issubset(report.curated_overlap_enrichment.columns)
     assert "mean_spatial_ccc_score" in report.distance_decay.columns
     assert {"n_sections", "top_k_section_fraction", "median_section_rank"}.issubset(report.section_reproducibility.columns)
     assert report.section_reproducibility["n_sections"].max() == 2
     assert report.metadata["section_key"] == "section"
     assert report.metadata["celltype_permutation_scope"] == "section"
+    assert report.metadata["curated_lr_table"] is True
     assert report.metadata["top_k"] == [100, 500, 1000]
 
 

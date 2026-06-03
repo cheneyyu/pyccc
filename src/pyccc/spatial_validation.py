@@ -23,6 +23,7 @@ class SpatialValidationReport:
     metadata: dict[str, object]
     top_k_enrichment: pd.DataFrame | None = None
     role_kernel_enrichment: pd.DataFrame | None = None
+    curated_overlap_enrichment: pd.DataFrame | None = None
 
 
 def validate_spatial_lr_table(
@@ -42,6 +43,7 @@ def validate_spatial_lr_table(
     section_key: str | None = None,
     section_top_k: int = 100,
     top_k: Sequence[int] = (100, 500, 1000),
+    curated_lr_table: CellChatDB | pd.DataFrame | None = None,
 ) -> SpatialValidationReport:
     """Validate candidate LR scores against simple spatial null models."""
 
@@ -68,6 +70,7 @@ def validate_spatial_lr_table(
     weight_tables = _spatial_weight_tables(coords, groups, radius=radius_value, sigma=sigma_value, kernels=distance_kernels)
     observed = _score_lr_spatial(lr, expr_means, weight_tables)
     summary = _lr_summary(observed, lr)
+    summary = _annotate_curated_overlap(summary, curated_lr_table, set(gene_names))
     null = _null_distribution(
         lr,
         adata,
@@ -87,6 +90,7 @@ def validate_spatial_lr_table(
     summary = _attach_null_stats(summary, null)
     top_k_enrichment = _top_k_enrichment(summary, null, top_k_values=top_k)
     role_kernel_enrichment = _role_kernel_enrichment(summary)
+    curated_overlap_enrichment = _curated_overlap_enrichment(summary, curated_lr_table)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
     section_reproducibility = _section_reproducibility(
         adata,
@@ -110,6 +114,7 @@ def validate_spatial_lr_table(
         "section_top_k": int(section_top_k),
         "celltype_permutation_scope": "section" if section_key is not None else "global",
         "top_k": [int(k) for k in top_k],
+        "curated_lr_table": curated_lr_table is not None,
     }
     return SpatialValidationReport(
         summary,
@@ -120,6 +125,7 @@ def validate_spatial_lr_table(
         metadata,
         top_k_enrichment=top_k_enrichment,
         role_kernel_enrichment=role_kernel_enrichment,
+        curated_overlap_enrichment=curated_overlap_enrichment,
     )
 
 
@@ -268,6 +274,24 @@ def _lr_summary(observed: pd.DataFrame, lr: pd.DataFrame) -> pd.DataFrame:
     if score_cols:
         summary = summary.merge(lr[["ligand", "receptor", *score_cols]].drop_duplicates(["ligand", "receptor"]), on=["ligand", "receptor"], how="left")
     return summary
+
+
+def _annotate_curated_overlap(
+    summary: pd.DataFrame,
+    curated_lr_table: CellChatDB | pd.DataFrame | None,
+    genes: set[str],
+) -> pd.DataFrame:
+    if curated_lr_table is None:
+        return summary
+    curated = curated_lr_table.interactions if isinstance(curated_lr_table, CellChatDB) else normalize_lr_table(curated_lr_table)
+    curated = _filter_lr(curated, genes)
+    curated_pairs = set(zip(curated["ligand"].astype(str), curated["receptor"].astype(str), strict=True))
+    out = summary.copy()
+    out["curated_overlap"] = [
+        (str(row.ligand), str(row.receptor)) in curated_pairs
+        for row in out.itertuples(index=False)
+    ]
+    return out
 
 
 def _null_distribution(
@@ -667,6 +691,46 @@ def _role_kernel_enrichment(summary: pd.DataFrame, *, role_score_threshold: floa
                     "role_mean": role_mean,
                     "background_mean": background_mean,
                     "role_kernel_enrichment": float(enrichment) if pd.notna(enrichment) else np.nan,
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _curated_overlap_enrichment(summary: pd.DataFrame, curated_lr_table: CellChatDB | pd.DataFrame | None) -> pd.DataFrame:
+    columns = [
+        "kernel",
+        "score_type",
+        "n_curated_overlap_pairs",
+        "n_background_pairs",
+        "curated_overlap_mean",
+        "background_mean",
+        "curated_overlap_enrichment",
+        "curated_overlap_fraction",
+    ]
+    if curated_lr_table is None or summary.empty or "curated_overlap" not in summary.columns:
+        return pd.DataFrame(columns=columns)
+    rows = []
+    for kernel, sub in summary.groupby("kernel", sort=False):
+        overlap_mask = sub["curated_overlap"].astype(bool)
+        background = sub[~overlap_mask]
+        for score_col in ("spatial_ccc_score", "model_weighted_spatial_ccc_score"):
+            if score_col not in sub.columns:
+                continue
+            overlap_values = pd.to_numeric(sub.loc[overlap_mask, score_col], errors="coerce").dropna()
+            background_values = pd.to_numeric(background[score_col], errors="coerce").dropna()
+            overlap_mean = float(overlap_values.mean()) if not overlap_values.empty else np.nan
+            background_mean = float(background_values.mean()) if not background_values.empty else np.nan
+            enrichment = overlap_mean / background_mean if pd.notna(overlap_mean) and pd.notna(background_mean) and background_mean != 0 else np.nan
+            rows.append(
+                {
+                    "kernel": str(kernel),
+                    "score_type": score_col,
+                    "n_curated_overlap_pairs": int(overlap_mask.sum()),
+                    "n_background_pairs": int((~overlap_mask).sum()),
+                    "curated_overlap_mean": overlap_mean,
+                    "background_mean": background_mean,
+                    "curated_overlap_enrichment": float(enrichment) if pd.notna(enrichment) else np.nan,
+                    "curated_overlap_fraction": float(overlap_mask.mean()) if len(overlap_mask) else np.nan,
                 }
             )
     return pd.DataFrame(rows, columns=columns)
