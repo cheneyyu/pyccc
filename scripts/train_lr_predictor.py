@@ -14,11 +14,12 @@ def main() -> None:
     parser.add_argument("--embeddings", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model", default="lightgbm", choices=["lightgbm", "sklearn"])
+    parser.add_argument("--density-groupby", default="clade")
     args = parser.parse_args()
     train = pd.read_csv(args.training_lr, sep="\t")
     embeddings = pd.read_csv(args.embeddings, sep="\t")
     embeddings["embedding"] = embeddings["embedding"].map(lambda value: np.asarray([float(x) for x in str(value).split(",")], dtype=np.float32))
-    pc.train_lr_link_predictor(train, embeddings, model=args.model, output_dir=args.output_dir)
+    pc.train_lr_link_predictor(train, embeddings, model=args.model, density_groupby=args.density_groupby, output_dir=args.output_dir)
 
 
 if __name__ == "__main__":

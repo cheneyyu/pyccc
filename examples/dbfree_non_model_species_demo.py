@@ -19,6 +19,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         fasta = Path(tmp) / "toy.protein.fa"
         fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVVVVVVVVVVV\n>pX gene=X1\nMAAAAA\n", encoding="utf-8")
+        # Toy dry run only; production prediction uses ESMC embeddings plus trained LightGBM role and pair models.
         predicted = pc.predict_lr_dbfree(
             adata,
             protein_fasta=fasta,

@@ -56,12 +56,14 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
 
     assert (tmp_path / "lr_link_model.joblib").exists()
     assert (tmp_path / "model_card.md").exists()
+    assert (tmp_path / "density_prior.tsv").exists()
     payload = load(tmp_path / "lr_link_model.joblib")
     assert "calibrator" in payload
     assert card["metrics"]["n_positive"] == 4
     assert card["final_model_training"] == "all_pairs_after_validation"
     assert card["validation_feature_encoder_fit"] == "train_split_only"
     assert card["calibration_method"] in {"isotonic", "skipped"}
+    assert card["density_prior_groupby"] == "clade"
     assert "leave_species_out" in card["validation_report"]
     assert "leave_resource_out" in card["validation_report"]
     assert "leave_family_out" in card["validation_report"]

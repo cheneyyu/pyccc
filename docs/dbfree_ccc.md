@@ -8,6 +8,16 @@ protein sequences and expression constraints.
 This is experimental. Predicted LR rows are computational candidates, not
 validated biochemical interactions.
 
+The intended production stack is:
+
+```text
+ESMC-300M mean-pooled protein embeddings
+  -> LightGBM protein role classifiers
+  -> LightGBM pair ranker
+  -> clade-aware LR-density prior
+  -> CellChatDB-compatible predicted LR table
+```
+
 Install prediction dependencies only when needed:
 
 ```bash
@@ -129,6 +139,7 @@ predicted_db = pc.predict_lr_dbfree(
     gene_id_key="gene_id",
     species_name="target_species",
     species_hint="unknown",
+    role_model="models/universal_esmc300m_role_v0",
     model="models/universal_esmc300m_lgbm_v0",
     density_prior="auto",
     max_pairs=50000,
@@ -146,6 +157,11 @@ res = pc.compute_communication(
 
 `compute_communication` remains deterministic. It does not infer LR pairs
 silently; prediction is an explicit upstream step.
+
+With `density_prior="auto"`, `predict_lr_dbfree(...)` first looks for
+`density_prior.tsv` in the LR ranker model directory and uses the row matching
+`species_hint` by `clade` when available. If no trained-model prior is present,
+it falls back to a conservative default density.
 
 ## Limitations
 

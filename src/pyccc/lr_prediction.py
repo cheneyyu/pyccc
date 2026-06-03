@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from .density import build_predicted_lr_table
+from .density import build_predicted_lr_table, estimate_lr_density_prior
 from .embeddings import embed_proteins_esmc
 from .pair_features import make_lr_pair_features
 from .roles import predict_protein_roles
@@ -86,6 +86,7 @@ def train_lr_link_predictor(
     output_dir: str | Path,
     negative_ratio: int = 5,
     calibration_method: str | None = "isotonic",
+    density_groupby: str = "clade",
     random_state: int = 0,
 ) -> dict[str, object]:
     """Train a pairwise LR link predictor and write a model card."""
@@ -145,9 +146,12 @@ def train_lr_link_predictor(
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     dump({"model": clf, "pca_model": features.pca_model, "feature_encoder": feature_encoder, "feature_names": features.feature_names, "calibrator": calibration["calibrator"]}, output / "lr_link_model.joblib")
+    density_prior = _write_density_prior(interactions, output, groupby=density_groupby)
     card = {
         "model_type": model,
         "feature_encoder": feature_encoder,
+        "density_prior_groupby": density_groupby,
+        "density_prior_path": str(output / "density_prior.tsv") if density_prior is not None else "",
         "final_model_training": "all_pairs_after_validation",
         "validation_feature_encoder_fit": "train_split_only",
         "calibration_method": calibration["method"],
@@ -324,10 +328,11 @@ def predict_lr_dbfree(
         **candidate_kwargs,
     )
     scores = score_lr_candidates(candidates, emb, model=model)
+    resolved_density_prior = _auto_density_prior(density_prior, model)
     db = build_predicted_lr_table(
         scores,
         roles=roles,
-        density_prior=density_prior,
+        density_prior=resolved_density_prior,
         species_hint=species_hint,
         max_pairs=max_pairs,
         model_name=str(model),
@@ -337,6 +342,30 @@ def predict_lr_dbfree(
     db.metadata["proteins"] = proteins
     db.metadata["embeddings"] = emb
     return db
+
+
+def _write_density_prior(interactions: pd.DataFrame, output: Path, *, groupby: str) -> pd.DataFrame | None:
+    density_interactions = interactions.copy()
+    if "is_positive_label" in density_interactions.columns:
+        density_interactions = density_interactions[density_interactions["is_positive_label"].astype(bool)].copy()
+    try:
+        density = estimate_lr_density_prior(density_interactions, groupby=groupby)
+    except ValueError:
+        return None
+    density.to_csv(output / "density_prior.tsv", sep="\t", index=False)
+    return density
+
+
+def _auto_density_prior(density_prior: pd.DataFrame | float | str, model: str | Path) -> pd.DataFrame | float | str:
+    if not (isinstance(density_prior, str) and density_prior == "auto"):
+        return density_prior
+    if str(model) == "heuristic":
+        return density_prior
+    path = Path(model)
+    table_path = path / "density_prior.tsv"
+    if table_path.exists():
+        return pd.read_csv(table_path, sep="\t")
+    return density_prior
 
 
 def _expressed_gene_fractions(adata, *, gene_id_key: str | None) -> pd.DataFrame:

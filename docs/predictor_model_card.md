@@ -25,7 +25,8 @@ uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr normalized_lr.tsv \
   --embeddings embeddings.tsv \
   --output-dir models/universal_esmc300m_lgbm_v0 \
-  --model lightgbm
+  --model lightgbm \
+  --density-groupby clade
 ```
 
 Before advertising a DB-free predictor beyond demos, require leave-species-out
@@ -47,6 +48,9 @@ Generated cards also record:
 - Brier score and 10-bin expected calibration error when calibration is usable.
 - baseline PR-AUC comparisons for degree prior, embedding cosine, role-only,
   and random scores.
+- `density_prior.tsv` next to the serialized LightGBM pair ranker, so
+  DB-free prediction can apply a clade-aware density prior with
+  `density_prior="auto"`.
 
 Use `pc.evaluate_lr_model_quality_gates(...)` to turn the model card into a
 check table. It reports model PR-AUC, baseline PR-AUC, optional top-K precision

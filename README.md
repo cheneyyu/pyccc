@@ -312,6 +312,7 @@ predicted_db = pc.predict_lr_dbfree(
     protein_fasta="target.longest_protein.fa",
     gene_id_key="gene_id",
     species_name="target_species",
+    role_model="models/universal_esmc300m_role_v0",
     model="models/universal_esmc300m_lgbm_v0",
     density_prior="auto",
 )

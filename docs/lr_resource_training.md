@@ -37,16 +37,18 @@ uv run python scripts/embed_proteome_esmc.py \
   --output human.embeddings.tsv \
   --backend hash
 
-uv run python scripts/train_role_classifier.py \
+uv run --extra predict python scripts/train_role_classifier.py \
   --training-lr normalized_lr.tsv \
   --embeddings human.embeddings.tsv \
-  --output-dir models/universal_esmc300m_role_v0
+  --output-dir models/universal_esmc300m_role_v0 \
+  --model lightgbm
 
 uv run --extra predict python scripts/train_lr_predictor.py \
   --training-lr normalized_lr.tsv \
   --embeddings human.embeddings.tsv \
   --output-dir models/universal_esmc300m_lgbm_v0 \
-  --model lightgbm
+  --model lightgbm \
+  --density-groupby clade
 ```
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
@@ -64,6 +66,8 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - a final deployment model refit on all training pairs after validation.
 - baseline comparisons against degree prior, embedding cosine, role-only, and
   random scores.
+- `density_prior.tsv`, computed from curated positive LR rows by `clade` by
+  default, for target-species thresholding.
 
 Folds that cannot contain both positive and pseudo-negative labels are reported
 as skipped instead of silently inflating the validation result. The PCA feature
