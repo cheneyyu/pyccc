@@ -14,6 +14,8 @@ dist/
 build/
 docs/_build/
 data/
+results/
+figures/
 cellchat_plot_comparison/
 cellchat_reference_comparison/
 *.png

@@ -109,12 +109,22 @@ def _ensure_spatial(adata, spatial_key: str) -> bool:
 
 
 def _choose_groupby(adata, priority: object) -> str | None:
+    columns = [str(col) for col in adata.obs.columns]
     for col in list(priority or []):
         if str(col) in adata.obs:
             return str(col)
-    for col in adata.obs.columns:
+        lowered = {name.lower(): name for name in columns}
+        if str(col).lower() in lowered:
+            return lowered[str(col).lower()]
+    n_obs = max(int(adata.n_obs), 1)
+    for col in columns:
+        if col.lower().endswith("id") or col.lower() in {"cellid", "cell_id", "barcode"}:
+            continue
         values = adata.obs[col]
-        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+        n_unique = int(values.astype(str).nunique())
+        if n_unique < 2 or n_unique > max(100, int(n_obs * 0.5)):
+            continue
+        if isinstance(values.dtype, pd.CategoricalDtype) or values.dtype == object:
             return str(col)
     return None
 
