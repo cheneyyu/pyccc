@@ -188,6 +188,9 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     assert card["validation_report"]["leave_family_out"]["status"] == "ok"
     assert card["validation_report"]["leave_clade_out"]["status"] == "ok"
     assert "degree_prior" in card["validation_report"]["random_stratified"]["baseline_pr_auc"]
+    assert card["validation_report"]["random_stratified"]["family_failure_cases"]
+    family_case = card["validation_report"]["random_stratified"]["family_failure_cases"][0]
+    assert {"ligand_family", "receptor_family", "n_pairs", "failure_score"}.issubset(family_case)
     assert "top_100" in card["metrics"]["top_k_recall"]
     assert "top_100" in card["metrics"]["top_k_enrichment"]
     assert "degree_prior" in card["metrics"]["baseline_top_k_recall"]

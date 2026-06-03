@@ -90,6 +90,8 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - a final deployment model refit on all training pairs after validation.
 - baseline comparisons against degree prior, embedding cosine, family-pair
   transfer, role-only, and random scores for PR-AUC and top-K ranker metrics.
+- ligand/receptor-family failure case summaries for held-out folds when
+  family or homology-cluster labels are present.
 - model-stack metadata: training resources, species/clades included, positive
   and pseudo-negative counts by species, embedding model name/revision/pooling,
   and the serialized pair-model parameters.

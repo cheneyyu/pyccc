@@ -69,6 +69,9 @@ Generated cards also record:
   cosine, family-pair transfer, role-only, and random scores. Top-K ranker
   comparisons include precision, recall, and enrichment at K = 100, 500, 1000,
   and 5000.
+- held-out ligand/receptor-family failure case summaries, highlighting
+  high-scoring pseudo-negatives and low-scoring positives by family pair when
+  family or homology-cluster labels are available.
 - PU pseudo-negative sampling counts by species, degree-matching metadata,
   easy-negative counts, and the configured homolog-near exclusion rule. The v0
   homology exclusion uses ligand/receptor family or homology-cluster labels

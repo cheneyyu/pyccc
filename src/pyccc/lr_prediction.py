@@ -1394,6 +1394,7 @@ def _evaluate_pair_split(
             }
             for name, baseline_metrics in baselines.items()
         },
+        "family_failure_cases": _family_failure_cases(pairs.iloc[test_idx], y_test, scores),
         "feature_encoder_fit": "train_split_only",
     }
 
@@ -1472,6 +1473,62 @@ def _role_only_scores(test_pairs: pd.DataFrame) -> np.ndarray:
     ligand = pd.to_numeric(test_pairs.get("ligand_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
     receptor = pd.to_numeric(test_pairs.get("receptor_role_score", pd.Series([0.5] * len(test_pairs))), errors="coerce").fillna(0.5).to_numpy(dtype=float)
     return (ligand + receptor) / 2.0
+
+
+def _family_failure_cases(
+    test_pairs: pd.DataFrame,
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    *,
+    max_cases: int = 10,
+) -> list[dict[str, object]]:
+    required = {"ligand_family", "receptor_family"}
+    if not required.issubset(test_pairs.columns):
+        return []
+    frame = pd.DataFrame(
+        {
+            "ligand_family": test_pairs["ligand_family"].fillna("").astype(str).to_numpy(),
+            "receptor_family": test_pairs["receptor_family"].fillna("").astype(str).to_numpy(),
+            "label": np.asarray(y_true, dtype=int),
+            "score": np.asarray(scores, dtype=float),
+        }
+    )
+    frame = frame[(frame["ligand_family"] != "") | (frame["receptor_family"] != "")].copy()
+    if frame.empty:
+        return []
+    rows = []
+    for (ligand_family, receptor_family), sub in frame.groupby(["ligand_family", "receptor_family"], sort=False):
+        positives = sub[sub["label"] == 1]
+        pseudo_negatives = sub[sub["label"] == 0]
+        max_negative = _maybe_float(pseudo_negatives["score"].max()) if not pseudo_negatives.empty else None
+        min_positive = _maybe_float(positives["score"].min()) if not positives.empty else None
+        failure_score = max(
+            max_negative if max_negative is not None else 0.0,
+            1.0 - min_positive if min_positive is not None else 0.0,
+        )
+        rows.append(
+            {
+                "ligand_family": str(ligand_family),
+                "receptor_family": str(receptor_family),
+                "n_pairs": int(len(sub)),
+                "n_positive": int((sub["label"] == 1).sum()),
+                "n_pseudo_negative": int((sub["label"] == 0).sum()),
+                "mean_score": float(sub["score"].mean()),
+                "max_pseudo_negative_score": max_negative,
+                "min_positive_score": min_positive,
+                "high_score_pseudo_negative_count": int((pseudo_negatives["score"] >= 0.5).sum()) if not pseudo_negatives.empty else 0,
+                "low_score_positive_count": int((positives["score"] < 0.5).sum()) if not positives.empty else 0,
+                "failure_score": float(failure_score),
+            }
+        )
+    rows.sort(key=lambda item: (float(item["failure_score"]), int(item["n_pairs"])), reverse=True)
+    return rows[: max(int(max_cases), 0)]
+
+
+def _maybe_float(value) -> float | None:
+    if pd.isna(value):
+        return None
+    return float(value)
 
 
 def _fit_calibrator_from_split(
