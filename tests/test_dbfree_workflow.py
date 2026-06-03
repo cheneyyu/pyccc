@@ -34,6 +34,7 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
 
     assert not predicted.interactions.empty
     assert {"model_score", "density_rank", "evidence_type", "warning", "nearest_reference_ligand"}.issubset(predicted.interactions.columns)
+    assert {"ligand_secreted_like_score", "receptor_membrane_like_score"}.issubset(predicted.interactions.columns)
     warnings = ";".join(predicted.interactions["warning"].astype(str))
     assert "heuristic_pair_ranker" in warnings
     assert "heuristic_role_model" in warnings

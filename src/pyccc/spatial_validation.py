@@ -22,6 +22,7 @@ class SpatialValidationReport:
     section_reproducibility: pd.DataFrame
     metadata: dict[str, object]
     top_k_enrichment: pd.DataFrame | None = None
+    role_kernel_enrichment: pd.DataFrame | None = None
 
 
 def validate_spatial_lr_table(
@@ -85,6 +86,7 @@ def validate_spatial_lr_table(
     )
     summary = _attach_null_stats(summary, null)
     top_k_enrichment = _top_k_enrichment(summary, null, top_k_values=top_k)
+    role_kernel_enrichment = _role_kernel_enrichment(summary)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
     section_reproducibility = _section_reproducibility(
         adata,
@@ -109,7 +111,16 @@ def validate_spatial_lr_table(
         "celltype_permutation_scope": "section" if section_key is not None else "global",
         "top_k": [int(k) for k in top_k],
     }
-    return SpatialValidationReport(summary, observed, null, distance_decay, section_reproducibility, metadata, top_k_enrichment=top_k_enrichment)
+    return SpatialValidationReport(
+        summary,
+        observed,
+        null,
+        distance_decay,
+        section_reproducibility,
+        metadata,
+        top_k_enrichment=top_k_enrichment,
+        role_kernel_enrichment=role_kernel_enrichment,
+    )
 
 
 def _gene_names(adata, *, gene_symbols_key: str | None) -> pd.Index:
@@ -241,7 +252,19 @@ def _lr_summary(observed: pd.DataFrame, lr: pd.DataFrame) -> pd.DataFrame:
         max_spatial_ccc_score=("spatial_ccc_score", "max"),
         model_weighted_spatial_ccc_score=("model_weighted_spatial_ccc_score", "mean"),
     )
-    score_cols = [col for col in ("model_score", "confidence", "density_rank") if col in lr.columns]
+    score_cols = [
+        col
+        for col in (
+            "model_score",
+            "confidence",
+            "density_rank",
+            "ligand_secreted_like_score",
+            "ligand_membrane_like_score",
+            "receptor_secreted_like_score",
+            "receptor_membrane_like_score",
+        )
+        if col in lr.columns
+    ]
     if score_cols:
         summary = summary.merge(lr[["ligand", "receptor", *score_cols]].drop_duplicates(["ligand", "receptor"]), on=["ligand", "receptor"], how="left")
     return summary
@@ -589,6 +612,64 @@ def _top_k_null_values(null: pd.DataFrame, top: pd.DataFrame, *, kernel: str, sc
         return np.asarray([], dtype=float)
     values = sub.groupby(["null_model", "iteration"], sort=False)["score_value"].mean()
     return values.astype(float).to_numpy()
+
+
+def _role_kernel_enrichment(summary: pd.DataFrame, *, role_score_threshold: float = 0.5) -> pd.DataFrame:
+    columns = [
+        "role_class",
+        "kernel",
+        "score_type",
+        "role_score_col",
+        "role_score_threshold",
+        "n_role_pairs",
+        "n_background_pairs",
+        "role_mean",
+        "background_mean",
+        "role_kernel_enrichment",
+    ]
+    if summary.empty:
+        return pd.DataFrame(columns=columns)
+    frame = summary.copy()
+    role_specs = []
+    if "ligand_secreted_like_score" in frame.columns:
+        role_specs.append(("secreted_like", "exp", "ligand_secreted_like_score"))
+    membrane_cols = [col for col in ("ligand_membrane_like_score", "receptor_membrane_like_score") if col in frame.columns]
+    if membrane_cols:
+        frame["membrane_contact_like_score"] = frame[membrane_cols].astype(float).max(axis=1)
+        role_specs.append(("membrane_contact_like", "contact", "membrane_contact_like_score"))
+    rows = []
+    for role_class, kernel, role_col in role_specs:
+        sub = frame[frame["kernel"].astype(str) == kernel].copy()
+        if sub.empty:
+            continue
+        role_score = pd.to_numeric(sub[role_col], errors="coerce").fillna(0.0)
+        role_mask = role_score >= role_score_threshold
+        background = sub[~role_mask].copy()
+        if background.empty:
+            background = sub
+        for score_col in ("spatial_ccc_score", "model_weighted_spatial_ccc_score"):
+            if score_col not in sub.columns:
+                continue
+            role_values = pd.to_numeric(sub.loc[role_mask, score_col], errors="coerce").dropna()
+            background_values = pd.to_numeric(background[score_col], errors="coerce").dropna()
+            role_mean = float(role_values.mean()) if not role_values.empty else np.nan
+            background_mean = float(background_values.mean()) if not background_values.empty else np.nan
+            enrichment = role_mean / background_mean if pd.notna(role_mean) and pd.notna(background_mean) and background_mean != 0 else np.nan
+            rows.append(
+                {
+                    "role_class": role_class,
+                    "kernel": kernel,
+                    "score_type": score_col,
+                    "role_score_col": role_col,
+                    "role_score_threshold": float(role_score_threshold),
+                    "n_role_pairs": int(role_mask.sum()),
+                    "n_background_pairs": int(len(background)),
+                    "role_mean": role_mean,
+                    "background_mean": background_mean,
+                    "role_kernel_enrichment": float(enrichment) if pd.notna(enrichment) else np.nan,
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, expr_means: pd.DataFrame) -> pd.DataFrame:

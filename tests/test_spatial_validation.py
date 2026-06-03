@@ -23,6 +23,9 @@ def test_spatial_validation_reports_null_statistics():
             "model_score": [0.9, 0.4],
             "ligand_role_score": [0.8, 0.3],
             "receptor_role_score": [0.7, 0.2],
+            "ligand_secreted_like_score": [0.9, 0.1],
+            "ligand_membrane_like_score": [0.2, 0.1],
+            "receptor_membrane_like_score": [0.8, 0.2],
         }
     )
 
@@ -34,6 +37,12 @@ def test_spatial_validation_reports_null_statistics():
     assert not report.section_reproducibility.empty
     assert report.top_k_enrichment is not None
     assert not report.top_k_enrichment.empty
+    assert report.role_kernel_enrichment is not None
+    assert not report.role_kernel_enrichment.empty
+    assert {"role_class", "kernel", "role_kernel_enrichment", "n_role_pairs"}.issubset(report.role_kernel_enrichment.columns)
+    assert {("secreted_like", "exp"), ("membrane_contact_like", "contact")}.issubset(
+        set(zip(report.role_kernel_enrichment["role_class"], report.role_kernel_enrichment["kernel"], strict=True))
+    )
     assert {"k", "score_type", "observed_mean", "top_k_enrichment_z", "top_k_empirical_pvalue"}.issubset(report.top_k_enrichment.columns)
     assert set(report.top_k_enrichment["k"]) == {100, 500, 1000}
     assert set(report.null_distribution["null_model"]) == {"coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"}

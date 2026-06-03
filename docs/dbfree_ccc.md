@@ -137,9 +137,10 @@ predicted_db = pc.build_predicted_lr_table(
 
 The output is a normal `CellChatDB` object. It includes `model_score`,
 `calibrated_probability`, `density_prior`, `density_rank`, confidence,
-provenance columns, nearest-reference annotations, warnings, and prediction
-summary metadata. The summary also records the target pair count, capped target
-count, achieved density, density delta, and density ratio.
+provenance columns, ligand/receptor role scores, secreted/membrane role scores,
+nearest-reference annotations, warnings, and prediction summary metadata. The
+summary also records the target pair count, capped target count, achieved
+density, density delta, and density ratio.
 
 When a trained pair ranker is used, `score_lr_candidates(...)` annotates each
 candidate with the nearest curated positive LR pair in the ranker feature

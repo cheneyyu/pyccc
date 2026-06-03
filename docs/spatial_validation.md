@@ -35,6 +35,9 @@ The report contains:
 - `section_reproducibility`: optional cross-section reproducibility summaries,
 - `top_k_enrichment`: top predicted LR-pair enrichment summaries for each
   kernel, score type, and requested K,
+- `role_kernel_enrichment`: optional role-aware summaries that compare
+  secreted-like pairs under the `exp` kernel and membrane/contact-like pairs
+  under the `contact` kernel against role-score background pairs,
 - `metadata`: radius, sigma, null model, and permutation settings.
 
 Supported kernels:
@@ -63,6 +66,11 @@ alongside expression, role-score, and degree match deltas.
 `top_k_enrichment` ranks predicted LR pairs by `model_score` when available,
 then reports the observed top-K mean score, null mean/SD, z-score, and
 empirical p-value for K values such as 100, 500, and 1000.
+If predicted LR tables contain `ligand_secreted_like_score`,
+`ligand_membrane_like_score`, or `receptor_membrane_like_score`,
+`role_kernel_enrichment` reports whether secreted-like pairs are preferentially
+enriched under the diffusion-style `exp` kernel and whether membrane/contact-like
+pairs are enriched under the `contact` kernel.
 
 For Stereo-seq/cellbin data, provide centroid coordinates in `obsm["spatial"]`.
 If cell area is available, `radius="auto"` estimates a contact radius from the
