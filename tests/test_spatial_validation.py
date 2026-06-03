@@ -4,6 +4,7 @@ import pytest
 from anndata import AnnData
 
 import pyccc as pc
+from pyccc.spatial_validation import _permute_groups_for_celltype_null
 
 
 @pytest.mark.spatial
@@ -38,6 +39,8 @@ def test_spatial_validation_reports_null_statistics():
     assert set(report.null_distribution["null_model"]) == {"coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"}
     assert {"ligand", "receptor", "kernel", "score_type", "score_value"}.issubset(report.null_distribution.columns)
     assert {"spatial_ccc_score", "model_weighted_spatial_ccc_score"}.issubset(set(report.null_distribution["score_type"]))
+    celltype_null = report.null_distribution[report.null_distribution["null_model"].astype(str) == "celltype_permutation"]
+    assert set(celltype_null["celltype_permutation_scope"]) == {"section"}
     matched = report.null_distribution[report.null_distribution["null_model"].astype(str) == "matched_random_lr"]
     assert {"matched_ligand", "matched_receptor", "ligand_match_expression_delta", "ligand_match_role_delta", "ligand_match_degree_delta"}.issubset(matched.columns)
     assert set(matched["ligand"]).issubset({"L1", "L2"})
@@ -48,4 +51,16 @@ def test_spatial_validation_reports_null_statistics():
     assert {"n_sections", "top_k_section_fraction", "median_section_rank"}.issubset(report.section_reproducibility.columns)
     assert report.section_reproducibility["n_sections"].max() == 2
     assert report.metadata["section_key"] == "section"
+    assert report.metadata["celltype_permutation_scope"] == "section"
     assert report.metadata["top_k"] == [100, 500, 1000]
+
+
+def test_celltype_null_permutation_can_be_section_stratified():
+    groups = np.array(["A", "A", "B", "C", "C", "D"])
+    sections = np.array(["s1", "s1", "s1", "s2", "s2", "s2"])
+
+    permuted = _permute_groups_for_celltype_null(groups, sections, np.random.default_rng(1))
+
+    for section in sorted(set(sections)):
+        mask = sections == section
+        assert sorted(permuted[mask].tolist()) == sorted(groups[mask].tolist())

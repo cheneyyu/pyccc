@@ -59,6 +59,7 @@ def validate_spatial_lr_table(
     if lr.empty:
         raise ValueError("No LR rows have ligand and receptor genes in the expression matrix.")
     groups = adata.obs[groupby].astype(str).to_numpy()
+    sections = adata.obs[section_key].astype(str).to_numpy() if section_key is not None else None
     radius_value = _resolve_radius(coords, adata, radius)
     sigma_value = _resolve_sigma(coords, sigma, fallback=radius_value)
     expr_means = _group_expression_means(adata, groups, gene_names, sorted(set(lr["ligand"]).union(set(lr["receptor"]))))
@@ -66,7 +67,22 @@ def validate_spatial_lr_table(
     weight_tables = _spatial_weight_tables(coords, groups, radius=radius_value, sigma=sigma_value, kernels=distance_kernels)
     observed = _score_lr_spatial(lr, expr_means, weight_tables)
     summary = _lr_summary(observed, lr)
-    null = _null_distribution(lr, adata, coords, groups, gene_names, expr_means, gene_expression, radius_value, sigma_value, distance_kernels, null_models, n_permutations, random_state)
+    null = _null_distribution(
+        lr,
+        adata,
+        coords,
+        groups,
+        gene_names,
+        expr_means,
+        gene_expression,
+        radius_value,
+        sigma_value,
+        distance_kernels,
+        null_models,
+        n_permutations,
+        random_state,
+        sections=sections,
+    )
     summary = _attach_null_stats(summary, null)
     top_k_enrichment = _top_k_enrichment(summary, null, top_k_values=top_k)
     distance_decay = _distance_decay(coords, groups, lr, expr_means)
@@ -90,6 +106,7 @@ def validate_spatial_lr_table(
         "n_permutations": n_permutations,
         "section_key": section_key,
         "section_top_k": int(section_top_k),
+        "celltype_permutation_scope": "section" if section_key is not None else "global",
         "top_k": [int(k) for k in top_k],
     }
     return SpatialValidationReport(summary, observed, null, distance_decay, section_reproducibility, metadata, top_k_enrichment=top_k_enrichment)
@@ -244,6 +261,8 @@ def _null_distribution(
     null_models: Sequence[str],
     n_permutations: int,
     random_state: int | None,
+    *,
+    sections: np.ndarray | None = None,
 ) -> pd.DataFrame:
     rng = np.random.default_rng(random_state)
     rows = []
@@ -255,7 +274,7 @@ def _null_distribution(
                 weights = _spatial_weight_tables(perm_coords, groups, radius=radius, sigma=sigma, kernels=kernels)
                 scored = _score_lr_spatial(lr, expr_means, weights)
             elif null_model == "celltype_permutation":
-                perm_groups = groups[rng.permutation(len(groups))]
+                perm_groups = _permute_groups_for_celltype_null(groups, sections, rng)
                 perm_means = _group_expression_means(adata, perm_groups, gene_names, sorted(set(lr["ligand"]).union(set(lr["receptor"]))))
                 weights = _spatial_weight_tables(coords, perm_groups, radius=radius, sigma=sigma, kernels=kernels)
                 scored = _score_lr_spatial(lr, perm_means, weights)
@@ -281,12 +300,51 @@ def _null_distribution(
                         "kernel": row.kernel,
                         "score_type": score_col,
                         "score_value": float(getattr(row, score_col)),
+                        "celltype_permutation_scope": _celltype_permutation_scope(null_model, sections),
                     }
                     for col in _MATCHED_NULL_COLUMNS:
                         if hasattr(row, col):
                             out[col] = getattr(row, col)
                     rows.append(out)
-    return pd.DataFrame(rows, columns=["iteration", "null_model", "ligand", "receptor", "kernel", "score_type", "score_value", *_MATCHED_NULL_COLUMNS])
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "iteration",
+            "null_model",
+            "ligand",
+            "receptor",
+            "kernel",
+            "score_type",
+            "score_value",
+            "celltype_permutation_scope",
+            *_MATCHED_NULL_COLUMNS,
+        ],
+    )
+
+
+def _permute_groups_for_celltype_null(
+    groups: np.ndarray,
+    sections: np.ndarray | None,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    groups = np.asarray(groups)
+    if sections is None:
+        return groups[rng.permutation(len(groups))]
+    sections = np.asarray(sections)
+    if len(sections) != len(groups):
+        raise ValueError("`sections` must have the same length as `groups`.")
+    out = groups.copy()
+    for section in sorted(set(sections)):
+        idx = np.flatnonzero(sections == section)
+        if len(idx) > 1:
+            out[idx] = groups[idx][rng.permutation(len(idx))]
+    return out
+
+
+def _celltype_permutation_scope(null_model: str, sections: np.ndarray | None) -> str | float:
+    if null_model != "celltype_permutation":
+        return np.nan
+    return "section" if sections is not None else "global"
 
 
 _MATCHED_NULL_COLUMNS = [

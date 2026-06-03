@@ -45,7 +45,8 @@ Supported kernels:
 Supported null models:
 
 - `coordinate_permutation`,
-- `celltype_permutation`,
+- `celltype_permutation`: permutes cell-type labels globally, or within
+  `section_key` strata when section/sample labels are provided,
 - `matched_random_lr`: samples ligand and receptor genes by matching global
   expression quantile, role score, and LR-table gene degree,
 - `score_permutation`: permutes model scores before recomputing the reported
@@ -70,6 +71,7 @@ median cell area; otherwise it uses the median nearest-neighbor distance.
 When `section_key` is provided, pyccc recomputes observed spatial scores within
 each section or sample and reports `n_sections`, cross-section score mean and
 standard deviation, positive-section fraction, top-K-section fraction, and
-median section rank for each LR pair and kernel. This is a reproducibility
-summary; the null p-values remain computed from the full object unless you run
-validation separately per section.
+median section rank for each LR pair and kernel. The cell-type permutation null
+also stays within sections, preserving section-level composition while testing
+whether labels explain the spatial signal. Other null p-values remain computed
+from the full object unless you run validation separately per section.
