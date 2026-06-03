@@ -14,6 +14,14 @@ cell-cell communication workflow:
 The package is intentionally AnnData-first and keeps results in tidy pandas
 tables plus small network matrices, so it can be used inside Scanpy notebooks.
 
+## Example Figures
+
+Representative CellChat-style outputs from the official human skin vignette:
+
+| Differential LR bubble | Pairwise pathway embedding | Outgoing role heatmap |
+| --- | --- | --- |
+| ![Differential ligand-receptor bubble](docs/figures/differential_lr_bubble.png) | ![Pairwise pathway embedding](docs/figures/pairwise_pathway_embedding.png) | ![Outgoing role heatmap comparison](docs/figures/role_heatmap_compare_outgoing.png) |
+
 ## Install
 
 ```bash
@@ -36,12 +44,6 @@ Optional interactive HTML river plots:
 
 ```bash
 uv sync --extra interactive --extra dev
-```
-
-If network access needs a proxy:
-
-```bash
-http_proxy=http://127.0.0.1:1086 https_proxy=http://127.0.0.1:1086 uv sync --extra liana --extra dev
 ```
 
 ## Quick Start
@@ -223,11 +225,10 @@ Use the official CellChat database directly:
 ```python
 db = pc.load_cellchatdb("human")
 
-# Behind a local proxy, or when you want an explicit cache location:
+# Use an explicit cache location when needed:
 db = pc.load_cellchatdb(
     "human",
     cache_dir="/tmp/pyccc-cache",
-    proxy="http://127.0.0.1:1086",
 )
 
 res = pc.compute_communication(adata, "cell_type", db)
@@ -238,7 +239,7 @@ Run the official CellChat human skin vignette data through pyccc plotnine
 figures:
 
 ```bash
-PYCCC_PROXY=http://127.0.0.1:1086 uv run python examples/cellchat_official_plotnine_demo.py
+uv run python examples/cellchat_official_plotnine_demo.py
 ```
 
 This example downloads the official CellChat tutorial RDA from figshare, loads
@@ -248,7 +249,7 @@ heatmap, river, pattern-dot, pattern-river, and differential figures.
 Run a backed CELLxGENE blood-vs-lung benchmark without rewriting gene names:
 
 ```bash
-PYCCC_PROXY=http://127.0.0.1:1086 uv run --extra ggplot python examples/cellxgene_blood_lung_benchmark.py \
+uv run --extra ggplot python examples/cellxgene_blood_lung_benchmark.py \
   --h5ad data/cellxgene/global_celltypist_immune_329k.h5ad \
   --gene-symbols-key gene_symbols \
   --out-dir data/cellxgene/benchmark_blood_lung_gene_symbols

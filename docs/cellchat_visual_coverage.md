@@ -107,5 +107,5 @@ The demo scripts export representative figures:
 uv run python examples/quickstart.py
 uv run python examples/masterpiece_demo.py
 uv run python examples/plotnine_demo.py
-PYCCC_PROXY=http://127.0.0.1:1086 uv run python examples/cellchat_official_plotnine_demo.py
+uv run python examples/cellchat_official_plotnine_demo.py
 ```
