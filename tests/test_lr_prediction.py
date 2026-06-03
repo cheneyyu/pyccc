@@ -5,6 +5,7 @@ from anndata import AnnData
 from joblib import load
 
 import pyccc as pc
+from pyccc.lr_prediction import _training_pairs
 
 
 def _fixture_training():
@@ -95,6 +96,46 @@ def test_generate_candidates_can_add_embedding_neighbors_under_budget():
     assert (predicted.interactions["candidate_strategy"].str.contains("embedding_nearest_neighbor")).any()
 
 
+def test_training_pairs_exclude_positive_family_pair_neighbors():
+    interactions = pd.DataFrame(
+        {
+            "species": ["toy"] * 4,
+            "clade": ["toy_clade"] * 4,
+            "resource": ["fixture"] * 4,
+            "ligand_gene": ["L1", "L2", "L3", "L4"],
+            "receptor_gene": ["R1", "R2", "R3", "R4"],
+            "ligand_family": ["lfam_shared", "lfam_shared", "lfam_b", "lfam_c"],
+            "receptor_family": ["rfam_shared", "rfam_shared", "rfam_b", "rfam_c"],
+        }
+    )
+    embeddings = pd.DataFrame(
+        {
+            "gene_id": ["L1", "L2", "L3", "L4", "R1", "R2", "R3", "R4"],
+            "embedding": [np.array([i, i + 1], dtype=np.float32) for i in range(8)],
+        }
+    )
+
+    pairs = _training_pairs(
+        interactions,
+        embeddings=embeddings,
+        negative_ratio=2,
+        negative_strategy="pu_degree_matched",
+        easy_negative_fraction=0.0,
+        excluded_homology_radius="family_pair",
+        random_state=4,
+    )
+    negatives = pairs[pairs["label"].astype(int) == 0]
+    positive_family_pairs = set(zip(interactions["ligand_family"], interactions["receptor_family"], strict=True))
+
+    assert not negatives.empty
+    assert all(
+        (row.ligand_family, row.receptor_family) not in positive_family_pairs
+        for row in negatives.itertuples(index=False)
+    )
+    assert negatives["degree_matching"].astype(bool).all()
+    assert set(negatives["excluded_homology_radius"]) == {"family_pair"}
+
+
 def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     interactions, embeddings = _fixture_training()
 
@@ -114,6 +155,9 @@ def test_train_score_lr_link_predictor_sklearn_fixture(tmp_path):
     payload = load(tmp_path / "lr_link_model.joblib")
     assert "calibrator" in payload
     assert card["metrics"]["n_positive"] == 4
+    assert card["metrics"]["n_negative"] > 0
+    assert card["negative_sampling"]["negative_strategy"] == "pu_degree_matched"
+    assert card["negative_sampling"]["excluded_homology_radius"] == "family_pair"
     assert card["final_model_training"] == "all_pairs_after_validation"
     assert card["validation_feature_encoder_fit"] == "train_split_only"
     assert card["calibration_method"] in {"isotonic", "skipped"}

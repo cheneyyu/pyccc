@@ -33,7 +33,10 @@ uv run --extra predict python scripts/train_lr_predictor.py \
   --embeddings embeddings.tsv \
   --output-dir models/universal_esmc300m_lgbm_v0 \
   --model lightgbm \
-  --density-groupby clade
+  --density-groupby clade \
+  --negative-ratio 5 \
+  --easy-negative-fraction 0.05 \
+  --excluded-homology-radius family_pair
 ```
 
 Before advertising a DB-free predictor beyond demos, require leave-species-out
@@ -60,6 +63,10 @@ Generated cards also record:
 - Brier score and 10-bin expected calibration error when calibration is usable.
 - baseline PR-AUC comparisons for degree prior, embedding cosine, role-only,
   and random scores.
+- PU pseudo-negative sampling counts by species, degree-matching metadata,
+  easy-negative counts, and the configured homolog-near exclusion rule. The v0
+  homology exclusion uses ligand/receptor family or homology-cluster labels
+  when available; it does not infer new sequence homology clusters.
 - `density_prior.tsv` next to the serialized LightGBM pair ranker, so
   DB-free prediction can apply a clade-aware density prior with
   `density_prior="auto"`.

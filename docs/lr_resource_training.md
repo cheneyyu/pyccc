@@ -61,7 +61,10 @@ uv run --extra predict python scripts/train_lr_predictor.py \
   --embeddings data/lr_training/training_embeddings.tsv \
   --output-dir models/universal_esmc300m_lgbm_v0 \
   --model lightgbm \
-  --density-groupby clade
+  --density-groupby clade \
+  --negative-ratio 5 \
+  --easy-negative-fraction 0.05 \
+  --excluded-homology-radius family_pair
 ```
 
 Use `--backend hash` only for fixture tests or dry runs. Real model building
@@ -85,6 +88,9 @@ The LR predictor trainer now writes `model_card.json` and `model_card.md` with:
 - a final deployment model refit on all training pairs after validation.
 - baseline comparisons against degree prior, embedding cosine, role-only, and
   random scores.
+- PU pseudo-negative sampling metadata, including positives/negatives by
+  species, degree matching, the easy-negative count, and family-pair homology
+  exclusion when ligand/receptor family or homology-cluster labels are present.
 - `density_prior.tsv`, computed from curated positive LR rows by `clade` by
   default, for target-species thresholding.
 
@@ -92,6 +98,13 @@ Folds that cannot contain both positive and pseudo-negative labels are reported
 as skipped instead of silently inflating the validation result. The PCA feature
 encoder is fit inside each training fold for validation, then refit on all
 pairs only for the final serialized model.
+
+`--excluded-homology-radius family_pair` is a conservative v0 approximation of
+homolog-near exclusion: when the training table has `ligand_family` and
+`receptor_family` labels, pseudo-negatives with the same ligand-family plus
+receptor-family combination as a curated positive are not sampled. If family
+labels are absent, the model card still reports that the requested exclusion
+mode was configured, but no sequence-radius inference is invented.
 
 After training, inspect quality gates programmatically:
 

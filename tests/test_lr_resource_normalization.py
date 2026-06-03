@@ -128,4 +128,5 @@ def test_build_lr_training_table_script_outputs_sequences_and_metadata(tmp_path)
     )
     embeddings = pd.read_csv(emb_path, sep="\t")
     assert embeddings.shape[0] == proteins.shape[0]
+    assert set(embeddings["species"]) == {"human", "mouse"}
     assert embeddings["embedding"].str.contains(",").all()

@@ -94,7 +94,7 @@ def _write_cached_embedding(cache_root: Path | None, seq_hash: str, embedding: n
 
 
 def _embedding_row(row, seq_hash: str, embedding: np.ndarray, *, model_name: str, model_revision: str | None, pooling: str) -> dict[str, object]:
-    return {
+    out = {
         "gene_id": str(row.gene_id),
         "protein_id": str(row.protein_id),
         "sequence_hash": seq_hash,
@@ -104,6 +104,9 @@ def _embedding_row(row, seq_hash: str, embedding: np.ndarray, *, model_name: str
         "pooling": pooling,
         "sequence_length": int(len(str(row.protein_sequence))),
     }
+    if hasattr(row, "species"):
+        out["species"] = str(row.species)
+    return out
 
 
 def _hash_embedding(sequence: str, *, dim: int) -> np.ndarray:

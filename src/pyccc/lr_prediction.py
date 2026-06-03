@@ -104,6 +104,8 @@ def train_lr_link_predictor(
     negative_strategy: str = "pu_degree_matched",
     output_dir: str | Path,
     negative_ratio: int = 5,
+    easy_negative_fraction: float = 0.05,
+    excluded_homology_radius: str = "family_pair",
     calibration_method: str | None = "isotonic",
     density_groupby: str = "clade",
     max_reference_pairs: int = 20000,
@@ -114,7 +116,15 @@ def train_lr_link_predictor(
     from joblib import dump
 
     interactions = getattr(training_table, "interactions", training_table)
-    pairs = _training_pairs(interactions, negative_ratio=negative_ratio, random_state=random_state)
+    pairs = _training_pairs(
+        interactions,
+        embeddings=embeddings,
+        negative_ratio=negative_ratio,
+        negative_strategy=negative_strategy,
+        easy_negative_fraction=easy_negative_fraction,
+        excluded_homology_radius=excluded_homology_radius,
+        random_state=random_state,
+    )
     y = pairs["label"].astype(int).to_numpy()
     if len(np.unique(y)) < 2:
         raise ValueError("Training requires at least one positive and one pseudo-negative pair.")
@@ -139,7 +149,9 @@ def train_lr_link_predictor(
         "baseline_delta_top_k_precision": random_metrics.get("baseline_delta_top_k_precision", {}),
         "n_pairs": int(len(y)),
         "n_positive": int(y.sum()),
+        "n_negative": int(len(y) - y.sum()),
         "negative_strategy": negative_strategy,
+        "negative_sampling": _negative_sampling_summary(pairs),
     }
     validation_report = _validation_report(
         pairs,
@@ -193,6 +205,9 @@ def train_lr_link_predictor(
         "validation_report": validation_report,
         "negative_strategy": negative_strategy,
         "negative_ratio": negative_ratio,
+        "easy_negative_fraction": easy_negative_fraction,
+        "excluded_homology_radius": excluded_homology_radius,
+        "negative_sampling": _negative_sampling_summary(pairs),
         "output_dir": str(output),
     }
     (output / "model_card.json").write_text(json.dumps(card, indent=2), encoding="utf-8")
@@ -649,49 +664,104 @@ def _gate_row(
     }
 
 
-def _training_pairs(interactions: pd.DataFrame, *, negative_ratio: int, random_state: int) -> pd.DataFrame:
+def _training_pairs(
+    interactions: pd.DataFrame,
+    *,
+    embeddings: pd.DataFrame | None = None,
+    negative_ratio: int,
+    negative_strategy: str,
+    easy_negative_fraction: float,
+    excluded_homology_radius: str,
+    random_state: int,
+) -> pd.DataFrame:
+    if negative_ratio < 1:
+        raise ValueError("`negative_ratio` must be at least 1.")
+    if not 0.0 <= easy_negative_fraction < 1.0:
+        raise ValueError("`easy_negative_fraction` must be in [0, 1).")
+    if negative_strategy != "pu_degree_matched":
+        raise ValueError("Only `negative_strategy='pu_degree_matched'` is supported.")
+    if excluded_homology_radius not in {"family_pair", "none", ""}:
+        raise ValueError("`excluded_homology_radius` must be one of: family_pair, none.")
     if "is_positive_label" in interactions.columns:
         positives = interactions[interactions["is_positive_label"].astype(bool)].copy()
     else:
         positives = interactions.copy()
     positives = _positive_pair_metadata(positives)
     positives["label"] = 1
+    for col in ("negative_strategy", "negative_seed", "degree_matching", "excluded_homology_radius", "easy_negative"):
+        positives[col] = ""
     rng = np.random.default_rng(random_state)
     negatives = []
     positive_set_by_species = {
         species: set(zip(sub["ligand_gene"].astype(str), sub["receptor_gene"].astype(str)))
         for species, sub in positives.groupby("species", sort=False)
     }
+    positive_family_pairs_by_species = {
+        species: _positive_family_pairs(sub)
+        for species, sub in positives.groupby("species", sort=False)
+    }
+    easy_pool = _easy_negative_gene_pool(positives, embeddings)
     for (species, resource), sub in positives.groupby(["species", "resource"], sort=False):
         species_sub = positives[positives["species"].astype(str) == str(species)]
         ligands, ligand_p = _degree_pool(species_sub["ligand_gene"])
         receptors, receptor_p = _degree_pool(species_sub["receptor_gene"])
         positive_set = positive_set_by_species[str(species)]
+        positive_family_pairs = positive_family_pairs_by_species[str(species)]
         target = len(sub) * negative_ratio
+        easy_target = (
+            min(int(np.ceil(target * easy_negative_fraction)), max(target - 1, 0))
+            if easy_pool.get(str(species))
+            else 0
+        )
+        hard_target = target - easy_target
         species_negatives = []
         tries = 0
-        while len(species_negatives) < target and tries < target * 20 + 100:
+        while len(species_negatives) < hard_target and tries < hard_target * 40 + 100:
             tries += 1
             lig = str(rng.choice(ligands, p=ligand_p))
             rec = str(rng.choice(receptors, p=receptor_p))
             if lig == rec or (lig, rec) in positive_set:
                 continue
+            ligand_family = _family_for_gene(species_sub, "ligand", lig)
+            receptor_family = _family_for_gene(species_sub, "receptor", rec)
+            if _is_homolog_near_positive(
+                ligand_family,
+                receptor_family,
+                positive_family_pairs,
+                excluded_homology_radius=excluded_homology_radius,
+            ):
+                continue
             species_negatives.append(
-                {
-                    "species": str(species),
-                    "clade": str(sub["clade"].iloc[0]) if "clade" in sub.columns else "",
-                    "resource": str(resource),
-                    "ligand_gene": lig,
-                    "receptor_gene": rec,
-                    "ligand_family": _family_for_gene(species_sub, "ligand", lig),
-                    "receptor_family": _family_for_gene(species_sub, "receptor", rec),
-                    "ligand_role_score": _role_score_for_gene(species_sub, "ligand", lig),
-                    "receptor_role_score": _role_score_for_gene(species_sub, "receptor", rec),
-                    "label": 0,
-                    "negative_strategy": "pu_degree_matched",
-                    "negative_seed": int(random_state),
-                }
+                _negative_pair_row(
+                    species=species,
+                    resource=resource,
+                    sub=sub,
+                    ligand_gene=lig,
+                    receptor_gene=rec,
+                    ligand_family=ligand_family,
+                    receptor_family=receptor_family,
+                    ligand_role_score=_role_score_for_gene(species_sub, "ligand", lig),
+                    receptor_role_score=_role_score_for_gene(species_sub, "receptor", rec),
+                    negative_strategy=negative_strategy,
+                    random_state=random_state,
+                    excluded_homology_radius=excluded_homology_radius,
+                    easy_negative=False,
+                )
             )
+        species_negatives.extend(
+            _sample_easy_negative_rows(
+                easy_pool,
+                n=easy_target,
+                rng=rng,
+                species=species,
+                resource=resource,
+                sub=sub,
+                positive_set=positive_set,
+                negative_strategy=negative_strategy,
+                random_state=random_state,
+                excluded_homology_radius=excluded_homology_radius,
+            )
+        )
         negatives.extend(species_negatives)
     pairs = pd.concat([positives, pd.DataFrame(negatives)], ignore_index=True)
     return pairs.sample(frac=1.0, random_state=random_state).reset_index(drop=True)
@@ -739,6 +809,151 @@ def _positive_pair_metadata(interactions: pd.DataFrame) -> pd.DataFrame:
     for col in cols:
         out[col] = out[col].fillna("").astype(str)
     return out
+
+
+def _positive_family_pairs(frame: pd.DataFrame) -> set[tuple[str, str]]:
+    pairs = set()
+    for row in frame.itertuples(index=False):
+        ligand_family = str(getattr(row, "ligand_family", "") or "")
+        receptor_family = str(getattr(row, "receptor_family", "") or "")
+        if ligand_family and receptor_family:
+            pairs.add((ligand_family, receptor_family))
+    return pairs
+
+
+def _is_homolog_near_positive(
+    ligand_family: str,
+    receptor_family: str,
+    positive_family_pairs: set[tuple[str, str]],
+    *,
+    excluded_homology_radius: str,
+) -> bool:
+    if excluded_homology_radius in {"", "none"}:
+        return False
+    if not ligand_family or not receptor_family:
+        return False
+    return (str(ligand_family), str(receptor_family)) in positive_family_pairs
+
+
+def _negative_pair_row(
+    *,
+    species,
+    resource,
+    sub: pd.DataFrame,
+    ligand_gene: str,
+    receptor_gene: str,
+    ligand_family: str,
+    receptor_family: str,
+    ligand_role_score,
+    receptor_role_score,
+    negative_strategy: str,
+    random_state: int,
+    excluded_homology_radius: str,
+    easy_negative: bool,
+) -> dict[str, object]:
+    return {
+        "species": str(species),
+        "clade": str(sub["clade"].iloc[0]) if "clade" in sub.columns else "",
+        "resource": str(resource),
+        "ligand_gene": str(ligand_gene),
+        "receptor_gene": str(receptor_gene),
+        "ligand_family": str(ligand_family),
+        "receptor_family": str(receptor_family),
+        "ligand_role_score": ligand_role_score,
+        "receptor_role_score": receptor_role_score,
+        "pathway": "",
+        "annotation": "",
+        "label": 0,
+        "negative_strategy": negative_strategy,
+        "negative_seed": int(random_state),
+        "degree_matching": not easy_negative,
+        "excluded_homology_radius": excluded_homology_radius if excluded_homology_radius else "none",
+        "easy_negative": bool(easy_negative),
+    }
+
+
+def _easy_negative_gene_pool(positives: pd.DataFrame, embeddings: pd.DataFrame | None) -> dict[str, list[str]]:
+    if embeddings is None or "species" not in embeddings.columns:
+        return {}
+    positive_genes = {
+        str(species): set(sub["ligand_gene"].astype(str)) | set(sub["receptor_gene"].astype(str))
+        for species, sub in positives.groupby("species", sort=False)
+    }
+    pool: dict[str, list[str]] = {}
+    for species, sub in embeddings.groupby("species", sort=False):
+        genes = sorted(set(sub["gene_id"].astype(str)) - positive_genes.get(str(species), set()))
+        if genes:
+            pool[str(species)] = genes
+    return pool
+
+
+def _sample_easy_negative_rows(
+    easy_pool: dict[str, list[str]],
+    *,
+    n: int,
+    rng: np.random.Generator,
+    species,
+    resource,
+    sub: pd.DataFrame,
+    positive_set: set[tuple[str, str]],
+    negative_strategy: str,
+    random_state: int,
+    excluded_homology_radius: str,
+) -> list[dict[str, object]]:
+    genes = easy_pool.get(str(species), [])
+    if n <= 0 or len(genes) < 2:
+        return []
+    rows = []
+    tries = 0
+    while len(rows) < n and tries < n * 20 + 100:
+        tries += 1
+        lig, rec = rng.choice(genes, size=2, replace=False)
+        lig = str(lig)
+        rec = str(rec)
+        if (lig, rec) in positive_set:
+            continue
+        rows.append(
+            _negative_pair_row(
+                species=species,
+                resource=resource,
+                sub=sub,
+                ligand_gene=lig,
+                receptor_gene=rec,
+                ligand_family="",
+                receptor_family="",
+                ligand_role_score=0.0,
+                receptor_role_score=0.0,
+                negative_strategy=negative_strategy,
+                random_state=random_state,
+                excluded_homology_radius=excluded_homology_radius,
+                easy_negative=True,
+            )
+        )
+    return rows
+
+
+def _negative_sampling_summary(pairs: pd.DataFrame) -> dict[str, object]:
+    negatives = pairs[pairs["label"].astype(int) == 0].copy()
+    positives = pairs[pairs["label"].astype(int) == 1].copy()
+    if negatives.empty:
+        return {
+            "n_positive": int(len(positives)),
+            "n_negative": 0,
+            "negative_by_species": {},
+            "easy_negative_count": 0,
+            "degree_matching": False,
+            "excluded_homology_radius": "",
+        }
+    return {
+        "n_positive": int(len(positives)),
+        "n_negative": int(len(negatives)),
+        "negative_by_species": {str(k): int(v) for k, v in negatives["species"].astype(str).value_counts().sort_index().items()},
+        "positive_by_species": {str(k): int(v) for k, v in positives["species"].astype(str).value_counts().sort_index().items()},
+        "easy_negative_count": int(pd.Series(negatives.get("easy_negative", False)).astype(bool).sum()),
+        "degree_matching": bool(pd.Series(negatives.get("degree_matching", False)).astype(bool).any()),
+        "excluded_homology_radius": ";".join(sorted(set(negatives.get("excluded_homology_radius", pd.Series(dtype=str)).astype(str)))),
+        "negative_strategy": ";".join(sorted(set(negatives.get("negative_strategy", pd.Series(dtype=str)).astype(str)))),
+    }
 
 
 def _degree_pool(values: pd.Series) -> tuple[np.ndarray, np.ndarray]:
@@ -1184,6 +1399,8 @@ def _model_card_markdown(card: dict[str, object]) -> str:
         f"- Calibration method: `{card['calibration_method']}`",
         f"- Negative strategy: `{card['negative_strategy']}`",
         f"- Negative ratio: `{card['negative_ratio']}`",
+        f"- Easy negative fraction: `{card.get('easy_negative_fraction', 0.0)}`",
+        f"- Excluded homology radius: `{card.get('excluded_homology_radius', '')}`",
         f"- Validation splits requested: {', '.join(card['validation_splits'])}",
         f"- Random split PR-AUC: {card['metrics']['pr_auc']:.4f}",
         "",
@@ -1206,6 +1423,20 @@ def _model_card_markdown(card: dict[str, object]) -> str:
             lines.append(f"- `{name}`: PR-AUC {float(item.get('pr_auc', float('nan'))):.4f}{suffix}")
         else:
             lines.append(f"- `{name}`: skipped ({item.get('reason', 'no usable folds')})")
+    sampling = card.get("negative_sampling", {})
+    if isinstance(sampling, dict):
+        lines.extend(
+            [
+                "",
+                "## Negative Sampling",
+                "",
+                f"- Positives: {sampling.get('n_positive', 0)}",
+                f"- Pseudo-negatives: {sampling.get('n_negative', 0)}",
+                f"- Easy pseudo-negatives: {sampling.get('easy_negative_count', 0)}",
+                f"- Degree matching: {sampling.get('degree_matching', False)}",
+                f"- Homology exclusion: `{sampling.get('excluded_homology_radius', '')}`",
+            ]
+        )
     if card.get("calibration_metrics"):
         lines.extend(
             [
