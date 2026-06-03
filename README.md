@@ -12,6 +12,7 @@ cell-cell communication workflow:
 - identify latent communication patterns
 - compare two conditions for differential CCC
 - reproduce CellChat-like plot types in Matplotlib
+- load official CellChatDB and OmniPath ligand-receptor resources
 - optionally import or run LIANA results
 
 The package is intentionally AnnData-first and keeps results in tidy pandas
@@ -49,12 +50,6 @@ differential, and matched visualization workflow faster through pyccc:
 
 ![Real 1M-cell CCC benchmark](docs/figures/runtime_real1m_speedup.png)
 
-| Strategy | Total time | Speedup vs direct CellChat |
-| --- | ---: | ---: |
-| pyccc native plots | 47.0 s | 4.28x |
-| pyccc compute + CellChat R plots | 63.7 s | 3.16x |
-| direct CellChat R | 201.1 s | 1.00x |
-
 Reproduce the benchmark:
 
 ```bash
@@ -79,7 +74,7 @@ uv run python examples/three_way_runtime_benchmark.py \
 Install directly from GitHub:
 
 ```bash
-python -m pip install "pyccc[ggplot,interactive] @ git+https://github.com/cheneyyu/pyccc.git@main"
+python -m pip install "pyccc[ggplot,interactive,omnipath] @ git+https://github.com/cheneyyu/pyccc.git@main"
 ```
 
 For development, clone the repository and create the local `uv` environment in
@@ -88,14 +83,14 @@ one step:
 ```bash
 git clone https://github.com/cheneyyu/pyccc.git
 cd pyccc
-uv sync --extra dev --extra ggplot --extra interactive --extra docs
+uv sync --extra dev --extra ggplot --extra interactive --extra omnipath --extra docs
 uv run pytest -q
 ```
 
 Add LIANA support only when you need LIANA import helpers:
 
 ```bash
-python -m pip install "pyccc[ggplot,interactive,liana] @ git+https://github.com/cheneyyu/pyccc.git@main"
+python -m pip install "pyccc[ggplot,interactive,omnipath,liana] @ git+https://github.com/cheneyyu/pyccc.git@main"
 ```
 
 ## Quick Start
@@ -275,16 +270,32 @@ Use the official CellChat database directly:
 
 ```python
 db = pc.load_cellchatdb("human")
+mouse_db = pc.load_cellchatdb("mouse", category="Secreted Signaling")
 
 # Use an explicit cache location when needed:
 db = pc.load_cellchatdb(
     "human",
+    category=["Secreted Signaling", "ECM-Receptor"],
     cache_dir="/tmp/pyccc-cache",
 )
 
 res = pc.compute_communication(adata, "cell_type", db)
 cp.bubble(res, size_by="pvalue")  # after running with permutations
 ```
+
+Load common external LR resources through OmniPath:
+
+```python
+omni = pc.load_omnipath_interactions(
+    organism="mouse",
+    resources=["CellChatDB", "CellPhoneDB", "LRdb"],
+)
+omni_cellchat = pc.filter_lr_table(omni, resources="CellChatDB")
+```
+
+For downloaded CSV/TSV/Parquet LR tables, pyccc accepts `ligand`/`receptor`
+columns and common OmniPath-style aliases such as `source_genesymbol` and
+`target_genesymbol`.
 
 Run the official CellChat human skin vignette data through pyccc plotnine
 figures:

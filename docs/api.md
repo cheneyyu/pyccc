@@ -22,6 +22,13 @@
    :members:
 ```
 
+## Ligand-Receptor Databases
+
+```{eval-rst}
+.. automodule:: pyccc.database
+   :members:
+```
+
 ## Matplotlib Plotting
 
 ```{eval-rst}

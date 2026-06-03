@@ -2,7 +2,7 @@
 
 from .analysis import CCCResult, compute_communication, compute_pathway_communication, identify_overexpressed_genes, identify_overexpressed_interactions
 from .cellchat_bridge import export_cellchat, export_cellchat_merged
-from .database import CellChatDB, load_cellchatdb, load_lr_table, toy_lr_table
+from .database import CellChatDB, filter_lr_table, load_cellchatdb, load_lr_table, load_omnipath_interactions, toy_lr_table
 from .diff import DifferentialCCC, compare_communication, compare_samples, pairwise_pathway_embedding, rank_pathway_similarity, signaling_changes
 from .expression import signaling_expression_frame, signaling_expression_values
 from .liana_bridge import from_liana_results, run_liana
@@ -26,6 +26,7 @@ __all__ = [
     "compute_pathway_similarity",
     "export_cellchat",
     "export_cellchat_merged",
+    "filter_lr_table",
     "from_liana_results",
     "identify_overexpressed_genes",
     "identify_overexpressed_interactions",
@@ -33,6 +34,7 @@ __all__ = [
     "interactive_pattern_river",
     "load_cellchatdb",
     "load_lr_table",
+    "load_omnipath_interactions",
     "pairwise_pathway_embedding",
     "rank_pathway_similarity",
     "run_liana",

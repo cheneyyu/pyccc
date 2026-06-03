@@ -7,6 +7,8 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
+import types
 import numpy as np
 import pandas as pd
 import pytest
@@ -88,6 +90,93 @@ def test_cellchatdb_object_conversion_expands_complexes():
     assert db.interactions.loc[0, "receptor"] == "TGFBR1_TGFBR2"
     assert db.interactions.loc[0, "agonist_genes"] == "THBS1"
     assert "interaction_raw" in db.metadata
+
+
+def test_lr_table_loads_common_external_column_names(tmp_path):
+    path = tmp_path / "omnipath_like.tsv"
+    pd.DataFrame(
+        {
+            "source_genesymbol": ["TGFB1"],
+            "target_genesymbol": ["TGFBR1"],
+            "sources": ["CellChatDB;CellPhoneDB"],
+            "references": ["PMID:123"],
+        }
+    ).to_csv(path, sep="\t", index=False)
+
+    db = pc.load_lr_table(path)
+
+    row = db.interactions.iloc[0]
+    assert row["ligand"] == "TGFB1"
+    assert row["receptor"] == "TGFBR1"
+    assert row["pathway"] == "unknown"
+    assert row["annotation"] == "CellChatDB;CellPhoneDB"
+    assert row["evidence"] == "PMID:123"
+
+
+def test_filter_lr_table_selects_cellchat_categories_and_pathways():
+    obj = {
+        "interaction": pd.DataFrame(
+            {
+                "interaction_name": ["TGFB1_TGFBR1", "COL1A1_ITGA1"],
+                "pathway_name": ["TGFb", "COLLAGEN"],
+                "ligand": ["TGFB1", "COL1A1"],
+                "receptor": ["TGFBR1", "ITGA1"],
+                "annotation": ["Secreted Signaling", "ECM-Receptor"],
+                "evidence": ["test1", "test2"],
+            }
+        ),
+        "complex": pd.DataFrame(),
+    }
+    db = _cellchatdb_from_object(obj, species="mouse")
+
+    secreted = pc.filter_lr_table(db, annotation="Secreted Signaling")
+    collagen = pc.filter_lr_table(db, pathways="COLLAGEN")
+
+    assert db.name == "cellchatdb_mouse"
+    assert secreted.interactions["ligand"].tolist() == ["TGFB1"]
+    assert collagen.interactions["receptor"].tolist() == ["ITGA1"]
+
+
+def test_omnipath_loader_converts_intercell_network(monkeypatch):
+    captured = {}
+
+    def fake_import_intercell_network(**kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame(
+            {
+                "source": ["P01137"],
+                "target": ["P36897"],
+                "source_genesymbol": ["TGFB1"],
+                "target_genesymbol": ["TGFBR1"],
+                "category_intercell_source": ["ligand"],
+                "category_intercell_target": ["receptor"],
+                "sources": ["CellChatDB;CellPhoneDB"],
+                "references": ["PMID:123"],
+                "is_stimulation": [True],
+            }
+        )
+
+    omnipath_pkg = types.ModuleType("omnipath")
+    interactions_mod = types.ModuleType("omnipath.interactions")
+    interactions_mod.import_intercell_network = fake_import_intercell_network
+    omnipath_pkg.interactions = interactions_mod
+    monkeypatch.setitem(sys.modules, "omnipath", omnipath_pkg)
+    monkeypatch.setitem(sys.modules, "omnipath.interactions", interactions_mod)
+
+    db = pc.load_omnipath_interactions(organism="10090", resources=["CellChatDB"], include="ligrecextra")
+
+    assert captured["interactions_params"]["organism"] == "mouse"
+    assert captured["interactions_params"]["genesymbols"] is True
+    assert captured["interactions_params"]["resources"] == ["CellChatDB"]
+    assert captured["transmitter_params"]["categories"] == ["ligand"]
+    assert captured["receiver_params"]["categories"] == ["receptor"]
+    assert captured["include"] == "ligrecextra"
+    row = db.interactions.iloc[0]
+    assert row["ligand"] == "TGFB1"
+    assert row["receptor"] == "TGFBR1"
+    assert row["pathway"] == "ligand -> receptor"
+    assert row["omnipath_sources"] == "CellChatDB;CellPhoneDB"
+    assert pc.filter_lr_table(db, resources="CellChatDB").interactions.shape[0] == 1
 
 
 def test_official_human_skin_factor_label_mapping_matches_cellchat_levels():
