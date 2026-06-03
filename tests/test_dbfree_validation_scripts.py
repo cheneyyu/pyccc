@@ -103,6 +103,20 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     )
     figure_prefix = tmp_path / "figures" / "dbfree_spatial_validation_main"
     _run("scripts/make_dbfree_spatial_validation_figure.py", "--results-dir", results, "--output-prefix", figure_prefix)
+    acceptance = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "check_dbfree_validation_acceptance.py"),
+            "--manifest",
+            str(manifest),
+            "--results-dir",
+            str(results),
+            "--figures-dir",
+            str(figure_prefix.parent),
+        ],
+        cwd=ROOT,
+        check=False,
+    )
 
     assert (results / "download_manifest.tsv").exists()
     assert (dataset_dir / "section_qc.tsv").exists()
@@ -113,6 +127,9 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
         assert figure_prefix.with_suffix(f".{ext}").exists()
     assert figure_prefix.with_name("dbfree_spatial_validation_main_legend.md").exists()
     assert figure_prefix.with_name("dbfree_spatial_validation_main_source_tables.tar.gz").exists()
+    report = pd.read_csv(results / "acceptance_report.tsv", sep="\t")
+    assert acceptance.returncode != 0
+    assert {"data", "sequence", "model", "spatial", "figure", "reproducibility"}.issubset(set(report["category"]))
 
 
 def _run(script, *args):

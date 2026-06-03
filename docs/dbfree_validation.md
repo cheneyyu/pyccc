@@ -52,6 +52,11 @@ uv run python scripts/run_dbfree_spatial_validation.py \
 
 uv run python scripts/make_dbfree_spatial_validation_figure.py \
   --results-dir results/dbfree_validation
+
+uv run python scripts/check_dbfree_validation_acceptance.py \
+  --manifest configs/dbfree_validation/artista_axolotl.yaml \
+  --manifest configs/dbfree_validation/sota_soybean.yaml \
+  --results-dir results/dbfree_validation
 ```
 
 For final figure runs, omit `--smoke-only` and use `--n-permutations 1000`.
@@ -76,6 +81,7 @@ The pipeline writes:
 - `figures/dbfree_spatial_validation_main.pdf`
 - `figures/dbfree_spatial_validation_main_legend.md`
 - `figures/dbfree_spatial_validation_main_source_tables.tar.gz`
+- `results/dbfree_validation/acceptance_report.tsv`
 
 Final figure tables must not contain fixture warnings such as
 `hash_embedding_backend`, `heuristic_role_model`, `heuristic_pair_ranker`, or
@@ -95,3 +101,8 @@ Gene/protein mapping gates are recorded in
 `gene_protein_match_summary.tsv`: ARTISTA requires at least 60 percent of
 expressed genes to map to target proteins, and SOTA requires at least
 70 percent.
+
+`check_dbfree_validation_acceptance.py` exits non-zero until all required
+data, sequence, model, spatial, figure, and reproducibility gates pass. This is
+expected during smoke tests before real target proteomes and trained models are
+available.
