@@ -13,6 +13,7 @@ installation
 lr_resources
 lr_resource_training
 dbfree_ccc
+dbfree_validation
 spatial_validation
 plotting_gallery
 million_cell_scaling
