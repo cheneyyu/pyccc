@@ -16,7 +16,7 @@ def test_load_training_lr_resources_supports_expected_local_schemas():
         ("cellphonedb", {"gene_a": "MIF", "gene_b": "CD74", "classification": "cytokine"}),
         ("flyphonedb2", {"ligand": "spz", "receptor": "Tl", "family": "Toll"}),
         ("plantphonedb", {"Ligand": "RALF1", "Receptor": "FER", "Pathway": "RALF"}),
-        ("plantcellchat", {"ligand": "PSK1", "receptor": "PSKR1", "pathway_name": "PSK"}),
+        ("plantcellchat", {"Ligand": "PSK1", "Receptor": "PSKR1", "Signal": "PSK", "Interaction_type": "Interacting protein"}),
         ("generic", {"ligand_gene": "VEGFA", "receptor_gene": "KDR", "pathway": "VEGF"}),
     ]
     resources = [
@@ -175,6 +175,29 @@ def test_build_lr_training_table_drops_incomplete_complex_metadata():
 
     assert training.interactions["ligand_gene"].tolist() == ["L1", "L3"]
     assert training.interactions["is_positive_label"].tolist() == [True, False]
+
+
+def test_build_lr_training_table_can_require_complete_sequences():
+    interactions = pd.DataFrame(
+        {
+            "ligand_gene": ["ABA", "L1"],
+            "receptor_gene": ["R0", "R1"],
+            "species": ["arabidopsis", "arabidopsis"],
+            "taxon_id": [3702, 3702],
+            "resource": ["plant_fixture", "plant_fixture"],
+            "evidence_type": ["curated_direct", "curated_direct"],
+            "annotation": ["", ""],
+            "pathway": ["ABA", "protein_pair"],
+            "ligand_sequence": ["", "MCCCC"],
+            "receptor_sequence": ["MRRRR", "MIIII"],
+        }
+    )
+
+    training = pc.build_lr_training_table(interactions, require_sequences=True)
+
+    assert training.interactions["ligand_gene"].tolist() == ["L1"]
+    assert training.interactions.attrs["n_input_interactions"] == 2
+    assert training.interactions.attrs["n_after_sequence_filter"] == 1
 
 
 def test_build_lr_training_table_script_outputs_sequences_and_metadata(tmp_path):

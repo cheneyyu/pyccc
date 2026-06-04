@@ -79,6 +79,12 @@ Use `--backend hash` only for fixture tests or dry runs. Real model building
 should use ESMC-300M embeddings from the `predict` extra, then train the
 LightGBM protein role classifiers and LightGBM pair ranker shown above.
 
+`build_lr_training_table.py` requires both ligand and receptor protein
+sequences by default. This intentionally filters plant rows where the ligand is
+a small molecule or hormone, such as ABA or IAA, because those rows cannot be
+embedded by ESMC-300M. Pass `--allow-missing-sequences` only for resource-audit
+tables that will not be used to train the LightGBM models.
+
 The role classifier trainer writes `model_card.json` and `model_card.md` with
 one-vs-rest positive/negative counts, prevalence, stratified holdout PR-AUC,
 ROC-AUC, top-K precision, and prevalence baseline deltas when each role has

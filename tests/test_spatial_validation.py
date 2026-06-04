@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 import pyccc as pc
 import pyccc.plotting as cp
-from pyccc.spatial_validation import _permute_groups_for_celltype_null
+from pyccc.spatial_validation import _distance_matrix_cache, _permute_groups_for_celltype_null, _spatial_weight_tables
 
 
 @pytest.mark.spatial
@@ -100,6 +100,48 @@ def test_celltype_null_permutation_can_be_section_stratified():
     for section in sorted(set(sections)):
         mask = sections == section
         assert sorted(permuted[mask].tolist()) == sorted(groups[mask].tolist())
+
+
+def test_spatial_weight_tables_match_distance_cache():
+    coords = np.array([[0, 0], [0, 1], [2, 0], [2, 2], [4, 0]], dtype=float)
+    groups = np.array(["A", "A", "B", "B", "C"])
+    dist = _distance_matrix_cache(coords, max_cells=10)
+
+    uncached = _spatial_weight_tables(coords, groups, radius=1.5, sigma=2.0, kernels=("contact", "exp"))
+    cached = _spatial_weight_tables(coords, groups, radius=1.5, sigma=2.0, kernels=("contact", "exp"), distance_matrix=dist)
+
+    for kernel in ("contact", "exp"):
+        left = uncached[kernel].sort_values(["source", "target"]).reset_index(drop=True)
+        right = cached[kernel].sort_values(["source", "target"]).reset_index(drop=True)
+        pd.testing.assert_frame_equal(left, right)
+
+
+def test_spatial_validation_can_skip_slow_diagnostics():
+    adata = AnnData(
+        np.array([[5, 0], [4, 0], [0, 3], [0, 4]], dtype=float),
+        obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"], "section": ["s1", "s1", "s1", "s1"]}, index=[f"c{i}" for i in range(4)]),
+        var=pd.DataFrame(index=["L1", "R1"]),
+    )
+    adata.obsm["spatial"] = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=float)
+    lr = pd.DataFrame({"ligand": ["L1"], "receptor": ["R1"], "model_score": [0.9]})
+
+    report = pc.validate_spatial_lr_table(
+        adata,
+        lr,
+        groupby="cell_type",
+        n_permutations=1,
+        section_key="section",
+        compute_distance_decay=False,
+        compute_section_reproducibility=False,
+    )
+
+    assert not report.summary.empty
+    assert report.distance_decay.empty
+    assert {"ligand", "receptor", "distance_min", "distance_max", "mean_distance", "mean_spatial_ccc_score"}.issubset(report.distance_decay.columns)
+    assert report.section_reproducibility.empty
+    assert {"ligand", "receptor", "kernel", "n_sections", "top_k_section_fraction"}.issubset(report.section_reproducibility.columns)
+    assert report.metadata["compute_distance_decay"] is False
+    assert report.metadata["compute_section_reproducibility"] is False
 
 
 def test_stereoseq_cellbin_example_writes_report_and_plots(tmp_path):

@@ -74,6 +74,15 @@ uv run python scripts/check_dbfree_validation_acceptance.py \
 ```
 
 For final figure runs, omit `--smoke-only` and use `--n-permutations 1000`.
+The committed real-data manifests default to the acceptance-critical top-K
+enrichment tables. Set `compute_distance_decay: true` or
+`compute_section_reproducibility: true` in `spatial_validation` when those
+heavier diagnostic source tables are needed. Set
+`write_celltype_pair_summary: true` or `write_null_distribution: true` only
+when those large intermediate tables are explicitly needed for audit.
+`distance_matrix_max_cells` controls whether each section caches one float32
+distance matrix for repeated null models; above that cell/bin count, pyccc
+falls back to block-wise distance reduction to avoid OOM.
 
 ## Outputs
 
@@ -85,9 +94,15 @@ The pipeline writes:
 - `results/dbfree_validation/*/predicted_lr.tsv`
 - `results/dbfree_validation/*/prediction_summary.tsv`
 - `results/dbfree_validation/*/spatial_validation_summary.tsv`
+- `results/dbfree_validation/*/spatial_validation_celltype_pair_summary.tsv`
+  when `write_celltype_pair_summary` is enabled
+- `results/dbfree_validation/*/spatial_validation_null_distribution.tsv`
+  when `write_null_distribution` is enabled
 - `results/dbfree_validation/*/spatial_validation_top_k_enrichment.tsv`
 - `results/dbfree_validation/*/spatial_validation_distance_decay.tsv`
+  when `compute_distance_decay` is enabled
 - `results/dbfree_validation/*/spatial_validation_section_reproducibility.tsv`
+  when `compute_section_reproducibility` is enabled
 - `results/dbfree_validation/baseline_comparison.tsv`
 - `results/dbfree_validation/baseline_topk_enrichment.tsv`
 - `figures/dbfree_spatial_validation_main.png`

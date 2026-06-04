@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--positive-evidence", default="curated_direct,curated_inferred")
     parser.add_argument("--drop-complexes", default="partial", choices=["partial", "none"])
+    parser.add_argument("--allow-missing-sequences", action="store_true", help="Keep LR rows without both ligand and receptor protein sequences.")
     args = parser.parse_args()
 
     resources = pd.concat([pd.read_csv(path, sep="\t") for path in args.normalized_lr], ignore_index=True)
@@ -26,6 +27,7 @@ def main() -> None:
         protein_fasta_by_species=protein_fasta_by_species,
         positive_evidence=positive_evidence,
         drop_complexes=args.drop_complexes,
+        require_sequences=not args.allow_missing_sequences,
     )
 
     output = Path(args.output_dir)
@@ -39,6 +41,10 @@ def main() -> None:
                 "protein_fasta_by_species": {species: str(path) for species, path in protein_fasta_by_species.items()},
                 "positive_evidence": sorted(training.positive_evidence),
                 "drop_complexes": args.drop_complexes,
+                "require_sequences": not args.allow_missing_sequences,
+                "n_input_interactions": int(training.interactions.attrs.get("n_input_interactions", training.interactions.shape[0])),
+                "n_after_complex_filter": int(training.interactions.attrs.get("n_after_complex_filter", training.interactions.shape[0])),
+                "n_after_sequence_filter": int(training.interactions.attrs.get("n_after_sequence_filter", training.interactions.shape[0])),
                 "n_interactions": int(training.interactions.shape[0]),
                 "n_proteins": int(training.proteins.shape[0]),
             },

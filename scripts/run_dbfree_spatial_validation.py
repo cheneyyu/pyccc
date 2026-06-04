@@ -41,8 +41,16 @@ def main() -> None:
     spatial_cfg = dict(manifest.get("spatial_validation", {}))
     n_permutations = int(args.n_permutations if args.n_permutations is not None else spatial_cfg.get("development_permutations", 100))
     baselines = tuple(args.baseline or BASELINES)
+    top_k_values = tuple(int(k) for k in spatial_cfg.get("top_k", (100, 500, 1000, 5000)))
+    compute_distance_decay = bool(spatial_cfg.get("compute_distance_decay", True))
+    compute_section_reproducibility = bool(spatial_cfg.get("compute_section_reproducibility", True))
+    write_celltype_pair_summary = bool(spatial_cfg.get("write_celltype_pair_summary", True))
+    write_null_distribution = bool(spatial_cfg.get("write_null_distribution", True))
+    distance_matrix_max_cells = spatial_cfg.get("distance_matrix_max_cells", 15000)
+    distance_matrix_max_cells = None if distance_matrix_max_cells is None else int(distance_matrix_max_cells)
     prepared = _prepared_paths(results_dir, sections)
     predicted_lr = _load_or_predict_lr(manifest, results_dir, args.predicted_lr, prepared)
+    predicted_lr = _limit_lr_for_validation(predicted_lr, max(top_k_values) if top_k_values else 5000)
     _write_model_card_summary(manifest, results_dir)
 
     report_tables: dict[str, list[pd.DataFrame]] = {
@@ -58,7 +66,7 @@ def main() -> None:
         section_id = str(section["name"])
         adata = sc.read_h5ad(prepared[section_id])
         for baseline in baselines:
-            lr_table = _baseline_lr(predicted_lr, baseline=baseline, adata=adata, gene_id_key=str(manifest.get("gene_id_key", "gene_id")))
+            lr_table = _baseline_lr(predicted_lr, baseline=baseline, adata=adata, gene_id_key="gene_id")
             report = pc.validate_spatial_lr_table(
                 adata,
                 lr_table=lr_table,
@@ -70,12 +78,17 @@ def main() -> None:
                 null_models=tuple(spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"))),
                 n_permutations=n_permutations,
                 random_state=int(spatial_cfg.get("random_seed", 0)),
-                top_k=tuple(int(k) for k in spatial_cfg.get("top_k", (100, 500, 1000, 5000))),
+                top_k=top_k_values,
+                compute_distance_decay=compute_distance_decay,
+                compute_section_reproducibility=compute_section_reproducibility,
+                distance_matrix_max_cells=distance_matrix_max_cells,
             )
             context = _context(manifest, section, adata, baseline=baseline, n_lr_pairs=len(lr_table), n_permutations=n_permutations)
             report_tables["summary"].append(_with_context(report.summary, context))
-            report_tables["celltype_pair_summary"].append(_with_context(report.celltype_pair_summary, context))
-            report_tables["null_distribution"].append(_with_context(report.null_distribution, context))
+            celltype_pairs = report.celltype_pair_summary if write_celltype_pair_summary else report.celltype_pair_summary.head(0)
+            null_distribution = report.null_distribution if write_null_distribution else report.null_distribution.head(0)
+            report_tables["celltype_pair_summary"].append(_with_context(celltype_pairs, context))
+            report_tables["null_distribution"].append(_with_context(null_distribution, context))
             top_k_enrichment = report.top_k_enrichment if report.top_k_enrichment is not None else pd.DataFrame()
             role_kernel_enrichment = report.role_kernel_enrichment if report.role_kernel_enrichment is not None else pd.DataFrame()
             report_tables["top_k_enrichment"].append(_with_context(top_k_enrichment, context))
@@ -86,10 +99,7 @@ def main() -> None:
     for key, frames in report_tables.items():
         frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         write_tsv(frame, results_dir / f"spatial_validation_{key}.tsv")
-    topk = pd.concat(report_tables["top_k_enrichment"], ignore_index=True) if report_tables["top_k_enrichment"] else pd.DataFrame()
-    write_tsv(topk, results_dir.parent / "baseline_topk_enrichment.tsv")
-    comparison = _baseline_comparison(topk)
-    write_tsv(comparison, results_dir.parent / "baseline_comparison.tsv")
+    _write_global_baseline_tables(results_dir.parent)
 
 
 def _prepared_paths(results_dir: Path, sections: list[dict[str, object]]) -> dict[str, str]:
@@ -119,13 +129,16 @@ def _load_or_predict_lr(
             + "; ".join(missing)
             + ". Provide --predicted-lr for validation-only runs."
         )
-    union = ad.concat([sc.read_h5ad(path) for path in prepared.values()], join="outer", merge="same")
+    prepared_adatas = [sc.read_h5ad(path) for path in prepared.values()]
+    gene_lookup = _union_gene_lookup(prepared_adatas)
+    union = ad.concat(prepared_adatas, join="outer", merge="same")
+    union.var["gene_id"] = [gene_lookup.get(str(name), str(name)) for name in union.var_names.astype(str)]
     predicted = pc.predict_lr_dbfree(
         union,
         protein_fasta=str(manifest["protein_fasta"]),
-        gene_id_key=str(manifest.get("gene_id_key", "gene_id")),
+        gene_id_key="gene_id",
         species_name=str(manifest["species"]).replace(" ", "_"),
-        species_hint=str(manifest.get("species_hint", "unknown")),
+        species_hint=str(manifest.get("clade", manifest.get("species_hint", "unknown"))),
         role_model=str(cfg["role_model"]),
         model=str(cfg["pair_model"]),
         density_prior=cfg.get("density_prior", "auto"),
@@ -149,6 +162,28 @@ def _load_or_predict_lr(
     if isinstance(summary, pd.DataFrame):
         write_tsv(summary, results_dir / "prediction_summary.tsv")
     return predicted.interactions
+
+
+def _limit_lr_for_validation(lr: pd.DataFrame, max_pairs: int) -> pd.DataFrame:
+    if max_pairs <= 0 or len(lr) <= max_pairs:
+        return lr.copy()
+    out = lr.copy()
+    if "density_rank" in out.columns:
+        out["_density_rank_numeric"] = pd.to_numeric(out["density_rank"], errors="coerce")
+        out = out.sort_values(["_density_rank_numeric", "model_score"], ascending=[True, False], na_position="last")
+        out = out.drop(columns=["_density_rank_numeric"])
+    elif "model_score" in out.columns:
+        out = out.sort_values("model_score", ascending=False)
+    return out.head(max_pairs).reset_index(drop=True)
+
+
+def _union_gene_lookup(adatas: list) -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for adata in adatas:
+        genes = adata.var["gene_id"].astype(str) if "gene_id" in adata.var else pd.Series(adata.var_names.astype(str), index=adata.var_names)
+        for var_name, gene_id in zip(adata.var_names.astype(str), genes, strict=True):
+            lookup.setdefault(str(var_name), str(gene_id))
+    return lookup
 
 
 def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) -> None:
@@ -312,6 +347,20 @@ def _baseline_comparison(topk: pd.DataFrame) -> pd.DataFrame:
     out = summary.merge(dbfree, on=key_cols, how="left")
     out["delta_z_vs_dbfree"] = out["enrichment_z"] - out["dbfree_enrichment_z"]
     return out
+
+
+def _write_global_baseline_tables(results_root: Path) -> None:
+    frames = []
+    for path in sorted(results_root.glob("*/spatial_validation_top_k_enrichment.tsv")):
+        try:
+            frame = pd.read_csv(path, sep="\t")
+        except pd.errors.EmptyDataError:
+            continue
+        if not frame.empty:
+            frames.append(frame)
+    topk = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    write_tsv(topk, results_root / "baseline_topk_enrichment.tsv")
+    write_tsv(_baseline_comparison(topk), results_root / "baseline_comparison.tsv")
 
 
 if __name__ == "__main__":

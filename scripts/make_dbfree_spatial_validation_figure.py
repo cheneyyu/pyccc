@@ -20,14 +20,14 @@ def main() -> None:
     topk = _read_optional(results_dir / "baseline_topk_enrichment.tsv")
     comparison = _read_optional(results_dir / "baseline_comparison.tsv")
     summary = _read_all_dataset_table(results_dir, "spatial_validation_summary.tsv")
-    decay = _read_all_dataset_table(results_dir, "spatial_validation_distance_decay.tsv")
+    prediction = _read_all_dataset_table(results_dir, "prediction_summary.tsv")
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
     _panel_workflow(axes[0, 0])
-    _panel_topk(axes[0, 1], topk, dataset="artista_axolotl", title="ARTISTA top-K enrichment")
-    _panel_distance_decay(axes[0, 2], decay, dataset="artista_axolotl")
+    _panel_topk(axes[0, 1], topk, dataset="artista_axolotl", title="B  ARTISTA top-K enrichment")
+    _panel_prediction_scale(axes[0, 2], prediction)
     _panel_top_lr(axes[1, 0], summary)
-    _panel_topk(axes[1, 1], topk, dataset="sota_soybean", title="SOTA plant validation")
+    _panel_topk(axes[1, 1], topk, dataset="sota_soybean", title="E  SOTA plant validation")
     _panel_comparison(axes[1, 2], comparison)
     for ext in ("png", "svg", "pdf"):
         fig.savefig(output_prefix.with_suffix(f".{ext}"), dpi=300)
@@ -50,19 +50,27 @@ def _read_all_dataset_table(results_dir: Path, name: str) -> pd.DataFrame:
 def _panel_workflow(ax) -> None:
     ax.axis("off")
     boxes = [
-        "protein FASTA/CDS\n+ spatial AnnData",
+        "protein FASTA/CDS\nspatial AnnData",
         "ESMC-300M\nembedding",
         "LightGBM protein\nrole classifiers",
         "LightGBM\npair ranker",
-        "clade-aware density\nprior LR table",
-        "pyccc CCC\n+ spatial nulls",
+        "clade-aware density\nprior",
+        "pyccc CCC\nspatial nulls",
     ]
-    y = 0.5
     for i, label in enumerate(boxes):
-        x = 0.05 + i * 0.155
-        ax.text(x, y, label, ha="center", va="center", fontsize=8, bbox=dict(boxstyle="round,pad=0.3", fc="#f7f7f7", ec="#444", lw=0.8), transform=ax.transAxes)
+        y = 0.88 - i * 0.145
+        ax.text(
+            0.5,
+            y,
+            label,
+            ha="center",
+            va="center",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.28", fc="#f7f7f7", ec="#444", lw=0.8),
+            transform=ax.transAxes,
+        )
         if i < len(boxes) - 1:
-            ax.annotate("", xy=(x + 0.075, y), xytext=(x + 0.105, y), arrowprops=dict(arrowstyle="->", lw=1), xycoords=ax.transAxes)
+            ax.annotate("", xy=(0.5, y - 0.07), xytext=(0.5, y - 0.105), arrowprops=dict(arrowstyle="->", lw=1), xycoords=ax.transAxes)
     ax.set_title("A  DB-free CCC validation workflow", loc="left")
 
 
@@ -87,6 +95,37 @@ def _panel_topk(ax, topk: pd.DataFrame, *, dataset: str, title: str) -> None:
     ax.set_xlabel("Top-K LR pairs")
     ax.set_ylabel("Enrichment z-score")
     ax.legend(frameon=False, fontsize=8)
+
+
+def _panel_prediction_scale(ax, prediction: pd.DataFrame) -> None:
+    ax.set_title("C  prediction scale and density", loc="left")
+    if prediction.empty:
+        _empty(ax, "No prediction summary")
+        return
+    frame = prediction.copy()
+    if "dataset" not in frame.columns:
+        dataset_names = []
+        for _, row in frame.iterrows():
+            dataset_names.append("sota_soybean" if "PlantCellChatDB" in str(row.get("density_source_resources", "")) else "artista_axolotl")
+        frame["dataset"] = dataset_names
+    frame["label"] = frame["dataset"].astype(str).map({"artista_axolotl": "ARTISTA", "sota_soybean": "SOTA"}).fillna(frame["dataset"].astype(str))
+    if "selected_pair_count" not in frame.columns:
+        frame["selected_pair_count"] = 0
+    if "density_prior" not in frame.columns:
+        frame["density_prior"] = pd.NA
+    frame["selected_pair_count"] = pd.to_numeric(frame["selected_pair_count"], errors="coerce").fillna(0)
+    frame["density_prior"] = pd.to_numeric(frame["density_prior"], errors="coerce")
+    frame = frame.sort_values("selected_pair_count")
+    colors = ["#4c78a8", "#59a14f", "#f28e2b", "#e15759"]
+    ax.barh(frame["label"], frame["selected_pair_count"], color=colors[: len(frame)])
+    ax.set_xlabel("Selected predicted LR pairs")
+    xmax = max(float(frame["selected_pair_count"].max()) * 1.35, 1.0)
+    ax.set_xlim(0, xmax)
+    for i, row in enumerate(frame.itertuples(index=False)):
+        density = getattr(row, "density_prior", float("nan"))
+        text = f"{int(row.selected_pair_count):,} pairs; density {density:.3g}" if pd.notna(density) else f"{int(row.selected_pair_count):,} pairs"
+        ax.text(float(row.selected_pair_count) + xmax * 0.02, i, text, va="center", fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
 
 
 def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:

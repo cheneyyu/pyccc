@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
 
 from .database import CellChatDB, normalize_lr_table
 
@@ -44,6 +45,9 @@ def validate_spatial_lr_table(
     section_top_k: int = 100,
     top_k: Sequence[int] = (100, 500, 1000),
     curated_lr_table: CellChatDB | pd.DataFrame | None = None,
+    compute_distance_decay: bool = True,
+    compute_section_reproducibility: bool = True,
+    distance_matrix_max_cells: int | None = 15000,
 ) -> SpatialValidationReport:
     """Validate candidate LR scores against simple spatial null models."""
 
@@ -67,7 +71,8 @@ def validate_spatial_lr_table(
     sigma_value = _resolve_sigma(coords, sigma, fallback=radius_value)
     expr_means = _group_expression_means(adata, groups, gene_names, sorted(set(lr["ligand"]).union(set(lr["receptor"]))))
     gene_expression = _gene_expression_means(adata, gene_names)
-    weight_tables = _spatial_weight_tables(coords, groups, radius=radius_value, sigma=sigma_value, kernels=distance_kernels)
+    distance_matrix = _distance_matrix_cache(coords, max_cells=distance_matrix_max_cells)
+    weight_tables = _spatial_weight_tables(coords, groups, radius=radius_value, sigma=sigma_value, kernels=distance_kernels, distance_matrix=distance_matrix)
     observed = _score_lr_spatial(lr, expr_means, weight_tables)
     summary = _lr_summary(observed, lr)
     summary = _annotate_curated_overlap(summary, curated_lr_table, set(gene_names))
@@ -86,23 +91,32 @@ def validate_spatial_lr_table(
         n_permutations,
         random_state,
         sections=sections,
+        distance_matrix=distance_matrix,
     )
     summary = _attach_null_stats(summary, null)
     top_k_enrichment = _top_k_enrichment(summary, null, top_k_values=top_k)
     role_kernel_enrichment = _role_kernel_enrichment(summary)
     curated_overlap_enrichment = _curated_overlap_enrichment(summary, curated_lr_table)
-    distance_decay = _distance_decay(coords, groups, lr, expr_means)
-    section_reproducibility = _section_reproducibility(
-        adata,
-        coords,
-        groups,
-        lr,
-        gene_names,
-        radius=radius_value,
-        sigma=sigma_value,
-        kernels=distance_kernels,
-        section_key=section_key,
-        section_top_k=section_top_k,
+    distance_decay = (
+        _distance_decay(coords, groups, lr, expr_means)
+        if compute_distance_decay
+        else _empty_distance_decay()
+    )
+    section_reproducibility = (
+        _section_reproducibility(
+            adata,
+            coords,
+            groups,
+            lr,
+            gene_names,
+            radius=radius_value,
+            sigma=sigma_value,
+            kernels=distance_kernels,
+            section_key=section_key,
+            section_top_k=section_top_k,
+        )
+        if compute_section_reproducibility
+        else _empty_section_reproducibility()
     )
     metadata = {
         "mode": mode,
@@ -115,6 +129,10 @@ def validate_spatial_lr_table(
         "celltype_permutation_scope": "section" if section_key is not None else "global",
         "top_k": [int(k) for k in top_k],
         "curated_lr_table": curated_lr_table is not None,
+        "compute_distance_decay": bool(compute_distance_decay),
+        "compute_section_reproducibility": bool(compute_section_reproducibility),
+        "distance_matrix_cached": distance_matrix is not None,
+        "distance_matrix_max_cells": distance_matrix_max_cells,
     }
     return SpatialValidationReport(
         summary,
@@ -150,9 +168,10 @@ def _resolve_radius(coords: np.ndarray, adata, radius: str | float) -> float:
             area = pd.to_numeric(adata.obs[key], errors="coerce").dropna()
             if not area.empty:
                 return float(np.sqrt(area.median() / np.pi) * 2.0)
-    dist = cdist(coords[:, :2], coords[:, :2])
-    np.fill_diagonal(dist, np.inf)
-    return float(np.median(dist.min(axis=1)))
+    if len(coords) < 2:
+        return 0.0
+    nearest, _ = cKDTree(coords[:, :2]).query(coords[:, :2], k=2)
+    return float(np.median(nearest[:, 1]))
 
 
 def _resolve_sigma(coords: np.ndarray, sigma: str | float, *, fallback: float) -> float:
@@ -188,29 +207,67 @@ def _gene_expression_means(adata, gene_names: pd.Index) -> pd.Series:
     return pd.Series(values.astype(float), index=gene_names.astype(str))
 
 
-def _spatial_weight_tables(coords: np.ndarray, groups: np.ndarray, *, radius: float, sigma: float, kernels: Sequence[str]) -> dict[str, pd.DataFrame]:
-    dist = cdist(coords[:, :2], coords[:, :2])
+def _distance_matrix_cache(coords: np.ndarray, *, max_cells: int | None) -> np.ndarray | None:
+    if max_cells is not None and len(coords) > int(max_cells):
+        return None
+    xy = coords[:, :2]
+    dist = np.empty((len(xy), len(xy)), dtype=np.float32)
+    block_size = 2048
+    for start in range(0, len(xy), block_size):
+        stop = min(start + block_size, len(xy))
+        dist[start:stop] = cdist(xy[start:stop], xy).astype(np.float32, copy=False)
+    return dist
+
+
+def _spatial_weight_tables(
+    coords: np.ndarray,
+    groups: np.ndarray,
+    *,
+    radius: float,
+    sigma: float,
+    kernels: Sequence[str],
+    distance_matrix: np.ndarray | None = None,
+) -> dict[str, pd.DataFrame]:
+    group_levels = np.asarray(sorted(set(groups)), dtype=object)
+    if len(group_levels) == 0:
+        return {str(kernel): pd.DataFrame(columns=["source", "target", "kernel", "spatial_weight"]) for kernel in kernels}
+    codes = pd.Categorical(groups, categories=group_levels).codes
+    if (codes < 0).any():
+        raise ValueError("Groups contain values outside the resolved category levels.")
+    n_groups = len(group_levels)
+    group_counts = np.bincount(codes, minlength=n_groups).astype(float)
+    denominators = np.maximum(np.outer(group_counts, group_counts), 1.0)
+    eye = np.eye(n_groups, dtype=float)
+    target_onehot = eye[codes]
+    sums = {str(kernel): np.zeros((n_groups, n_groups), dtype=float) for kernel in kernels}
+    block_size = 2048
+    xy = coords[:, :2]
+    for start in range(0, len(xy), block_size):
+        stop = min(start + block_size, len(xy))
+        dist = distance_matrix[start:stop] if distance_matrix is not None else cdist(xy[start:stop], xy)
+        source_onehot = eye[codes[start:stop]]
+        for kernel in kernels:
+            kernel_name = str(kernel)
+            if kernel_name == "contact":
+                weights = (dist <= radius).astype(float)
+            elif kernel_name == "exp":
+                weights = np.exp(-dist / sigma)
+            else:
+                raise ValueError("Distance kernels must be `contact` or `exp`.")
+            sums[kernel_name] += source_onehot.T @ (weights @ target_onehot)
     tables = {}
-    for kernel in kernels:
-        if kernel == "contact":
-            weights = (dist <= radius).astype(float)
-        elif kernel == "exp":
-            weights = np.exp(-dist / sigma)
-        else:
-            raise ValueError("Distance kernels must be `contact` or `exp`.")
-        rows = []
-        group_levels = sorted(set(groups))
-        for source in group_levels:
-            s_mask = groups == source
-            for target in group_levels:
-                t_mask = groups == target
-                rows.append({"source": source, "target": target, "kernel": kernel, "spatial_weight": float(weights[np.ix_(s_mask, t_mask)].mean())})
-        tables[kernel] = pd.DataFrame(rows)
+    for kernel_name, weight_sum in sums.items():
+        weights = weight_sum / denominators
+        rows = [
+            {"source": str(source), "target": str(target), "kernel": kernel_name, "spatial_weight": float(weights[i, j])}
+            for i, source in enumerate(group_levels)
+            for j, target in enumerate(group_levels)
+        ]
+        tables[kernel_name] = pd.DataFrame(rows)
     return tables
 
 
 def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    rows = []
     metadata_cols = [
         "original_ligand",
         "original_receptor",
@@ -223,33 +280,42 @@ def _score_lr_spatial(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables:
         "ligand_match_degree_delta",
         "receptor_match_degree_delta",
     ]
+    frames = []
+    ligands = lr["ligand"].astype(str).to_numpy()
+    receptors = lr["receptor"].astype(str).to_numpy()
+    model_scores = pd.to_numeric(lr.get("model_score", pd.Series([1.0] * len(lr))), errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    n_lr = len(lr)
     for kernel, weights in weight_tables.items():
-        for lr_row in lr.itertuples(index=False):
-            ligand = str(lr_row.ligand)
-            receptor = str(lr_row.receptor)
-            model_score = float(getattr(lr_row, "model_score", 1.0))
-            for weight_row in weights.itertuples(index=False):
-                source_expr = float(expr_means.loc[str(weight_row.source), ligand])
-                target_expr = float(expr_means.loc[str(weight_row.target), receptor])
-                expression_score = source_expr * target_expr
-                spatial_score = expression_score * float(weight_row.spatial_weight)
-                row_out = {
-                    "ligand": ligand,
-                    "receptor": receptor,
-                    "source": str(weight_row.source),
-                    "target": str(weight_row.target),
-                    "kernel": kernel,
-                    "expression_score": expression_score,
-                    "spatial_weight": float(weight_row.spatial_weight),
-                    "spatial_ccc_score": spatial_score,
-                    "model_score": model_score,
-                    "model_weighted_spatial_ccc_score": spatial_score * model_score,
-                }
-                for col in metadata_cols:
-                    if hasattr(lr_row, col):
-                        row_out[col] = getattr(lr_row, col)
-                rows.append(row_out)
-    return pd.DataFrame(rows)
+        if weights.empty or n_lr == 0:
+            continue
+        weights = weights.reset_index(drop=True)
+        sources = weights["source"].astype(str).to_numpy()
+        targets = weights["target"].astype(str).to_numpy()
+        spatial_weights = pd.to_numeric(weights["spatial_weight"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        source_expr = expr_means.reindex(index=sources, columns=ligands, fill_value=0.0).to_numpy(dtype=float)
+        target_expr = expr_means.reindex(index=targets, columns=receptors, fill_value=0.0).to_numpy(dtype=float)
+        expression_score = source_expr * target_expr
+        spatial_score = expression_score * spatial_weights[:, None]
+        n_weights = len(weights)
+        frame = pd.DataFrame(
+            {
+                "ligand": np.tile(ligands, n_weights),
+                "receptor": np.tile(receptors, n_weights),
+                "source": np.repeat(sources, n_lr),
+                "target": np.repeat(targets, n_lr),
+                "kernel": str(kernel),
+                "expression_score": expression_score.reshape(-1),
+                "spatial_weight": np.repeat(spatial_weights, n_lr),
+                "spatial_ccc_score": spatial_score.reshape(-1),
+                "model_score": np.tile(model_scores, n_weights),
+            }
+        )
+        frame["model_weighted_spatial_ccc_score"] = frame["spatial_ccc_score"].to_numpy(dtype=float) * frame["model_score"].to_numpy(dtype=float)
+        for col in metadata_cols:
+            if col in lr.columns:
+                frame[col] = np.tile(lr[col].to_numpy(), n_weights)
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _lr_summary(observed: pd.DataFrame, lr: pd.DataFrame) -> pd.DataFrame:
@@ -310,29 +376,40 @@ def _null_distribution(
     random_state: int | None,
     *,
     sections: np.ndarray | None = None,
+    distance_matrix: np.ndarray | None = None,
 ) -> pd.DataFrame:
     rng = np.random.default_rng(random_state)
     rows = []
     n = max(int(n_permutations), 0)
+    base_weights = _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels, distance_matrix=distance_matrix)
+    all_expr_means = None
     for i in range(n):
         for null_model in null_models:
             if null_model == "coordinate_permutation":
-                perm_coords = coords[rng.permutation(len(coords))]
-                weights = _spatial_weight_tables(perm_coords, groups, radius=radius, sigma=sigma, kernels=kernels)
+                perm = rng.permutation(len(coords))
+                if distance_matrix is None:
+                    weights = _spatial_weight_tables(coords[perm], groups, radius=radius, sigma=sigma, kernels=kernels)
+                else:
+                    inverse = np.empty_like(perm)
+                    inverse[perm] = np.arange(len(perm))
+                    coord_groups = groups[inverse]
+                    weights = _spatial_weight_tables(coords, coord_groups, radius=radius, sigma=sigma, kernels=kernels, distance_matrix=distance_matrix)
                 scored = _score_lr_spatial(lr, expr_means, weights)
             elif null_model == "celltype_permutation":
                 perm_groups = _permute_groups_for_celltype_null(groups, sections, rng)
                 perm_means = _group_expression_means(adata, perm_groups, gene_names, sorted(set(lr["ligand"]).union(set(lr["receptor"]))))
-                weights = _spatial_weight_tables(coords, perm_groups, radius=radius, sigma=sigma, kernels=kernels)
+                weights = _spatial_weight_tables(coords, perm_groups, radius=radius, sigma=sigma, kernels=kernels, distance_matrix=distance_matrix)
                 scored = _score_lr_spatial(lr, perm_means, weights)
             elif null_model == "matched_random_lr":
                 random_lr = _matched_random_lr(lr, gene_expression, rng)
-                scored = _score_lr_spatial(random_lr, expr_means, _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels))
+                if all_expr_means is None:
+                    all_expr_means = _group_expression_means(adata, groups, gene_names, gene_names)
+                scored = _score_lr_spatial(random_lr, all_expr_means, base_weights)
             elif null_model == "score_permutation":
                 permuted = lr.copy()
                 if "model_score" in permuted.columns:
                     permuted["model_score"] = rng.permutation(permuted["model_score"].to_numpy())
-                scored = _score_lr_spatial(permuted, expr_means, _spatial_weight_tables(coords, groups, radius=radius, sigma=sigma, kernels=kernels))
+                scored = _score_lr_spatial(permuted, expr_means, base_weights)
             else:
                 raise ValueError(f"Unsupported null model: {null_model}")
             score_cols = ["spatial_ccc_score", "model_weighted_spatial_ccc_score"]
@@ -763,7 +840,7 @@ def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, ex
                     "mean_spatial_ccc_score": float(np.mean(scores)) if scores else 0.0,
                 }
             )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=_DISTANCE_DECAY_COLUMNS)
 
 
 def _section_reproducibility(
@@ -779,22 +856,8 @@ def _section_reproducibility(
     section_key: str | None,
     section_top_k: int,
 ) -> pd.DataFrame:
-    columns = [
-        "ligand",
-        "receptor",
-        "kernel",
-        "n_sections",
-        "section_spatial_ccc_score_mean",
-        "section_spatial_ccc_score_sd",
-        "section_spatial_ccc_score_cv",
-        "section_model_weighted_spatial_ccc_score_mean",
-        "section_model_weighted_spatial_ccc_score_sd",
-        "positive_section_fraction",
-        "top_k_section_fraction",
-        "median_section_rank",
-    ]
     if section_key is None:
-        return pd.DataFrame(columns=columns)
+        return _empty_section_reproducibility()
     sections = adata.obs[section_key].astype(str).to_numpy()
     genes = sorted(set(lr["ligand"]).union(set(lr["receptor"])))
     rows = []
@@ -819,7 +882,7 @@ def _section_reproducibility(
         section_summary["section_top_k"] = section_summary["section_rank"] <= max(int(section_top_k), 1)
         rows.append(section_summary)
     if not rows:
-        return pd.DataFrame(columns=columns)
+        return _empty_section_reproducibility()
     per_section = pd.concat(rows, ignore_index=True)
     out = per_section.groupby(["ligand", "receptor", "kernel"], as_index=False).agg(
         n_sections=("section", "nunique"),
@@ -833,4 +896,38 @@ def _section_reproducibility(
     )
     denom = out["section_spatial_ccc_score_mean"].abs().replace(0, np.nan)
     out["section_spatial_ccc_score_cv"] = out["section_spatial_ccc_score_sd"] / denom
-    return out[columns]
+    return out[_SECTION_REPRODUCIBILITY_COLUMNS]
+
+
+_DISTANCE_DECAY_COLUMNS = [
+    "ligand",
+    "receptor",
+    "distance_min",
+    "distance_max",
+    "mean_distance",
+    "mean_spatial_ccc_score",
+]
+
+
+_SECTION_REPRODUCIBILITY_COLUMNS = [
+    "ligand",
+    "receptor",
+    "kernel",
+    "n_sections",
+    "section_spatial_ccc_score_mean",
+    "section_spatial_ccc_score_sd",
+    "section_spatial_ccc_score_cv",
+    "section_model_weighted_spatial_ccc_score_mean",
+    "section_model_weighted_spatial_ccc_score_sd",
+    "positive_section_fraction",
+    "top_k_section_fraction",
+    "median_section_rank",
+]
+
+
+def _empty_distance_decay() -> pd.DataFrame:
+    return pd.DataFrame(columns=_DISTANCE_DECAY_COLUMNS)
+
+
+def _empty_section_reproducibility() -> pd.DataFrame:
+    return pd.DataFrame(columns=_SECTION_REPRODUCIBILITY_COLUMNS)

@@ -136,11 +136,11 @@ SCHEMA_COLUMN_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "evidence": ("evidence", "reference", "Reference", "pmid"),
     },
     "plantcellchat": {
-        "ligand_gene": ("ligand_gene", "ligand", "source", "source_gene"),
-        "receptor_gene": ("receptor_gene", "receptor", "target", "target_gene"),
-        "pathway": ("pathway_name", "pathway", "signaling"),
-        "annotation": ("annotation", "classification", "category"),
-        "evidence": ("evidence", "reference", "references", "pmid"),
+        "ligand_gene": ("ligand_gene", "ligand", "Ligand", "source", "source_gene"),
+        "receptor_gene": ("receptor_gene", "receptor", "Receptor", "target", "target_gene"),
+        "pathway": ("pathway_name", "pathway", "Signal", "signaling"),
+        "annotation": ("annotation", "Interaction_type", "classification", "category"),
+        "evidence": ("evidence", "Evidence", "reference", "references", "pmid"),
     },
 }
 

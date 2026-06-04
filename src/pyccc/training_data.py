@@ -28,12 +28,14 @@ def build_lr_training_table(
     protein_fasta_by_species: Mapping[str, str | Path] | None = None,
     positive_evidence: set[str] | None = None,
     drop_complexes: str = "partial",
+    require_sequences: bool = False,
 ) -> LRTrainingTable:
     """Build a normalized cross-species LR table for predictor training."""
 
     if drop_complexes not in {"partial", "none"}:
         raise ValueError("`drop_complexes` must be one of: partial, none.")
     interactions = resources.copy() if isinstance(resources, pd.DataFrame) else load_training_lr_resources(resources)
+    n_input_interactions = int(len(interactions))
     positive_evidence = set(positive_evidence or {"curated_direct", "curated_inferred"})
     interactions["is_positive_label"] = [
         bool(set(_split_semicolon_values(value)) & positive_evidence)
@@ -44,7 +46,15 @@ def build_lr_training_table(
         interactions = _attach_sequences(interactions, proteins)
     if drop_complexes == "partial":
         interactions = _drop_partial_complexes(interactions)
-    return LRTrainingTable(interactions.reset_index(drop=True), proteins.reset_index(drop=True), set(positive_evidence))
+    n_after_complex_filter = int(len(interactions))
+    if require_sequences:
+        interactions = _filter_complete_sequences(interactions)
+    interactions = interactions.reset_index(drop=True)
+    interactions.attrs["n_input_interactions"] = n_input_interactions
+    interactions.attrs["n_after_complex_filter"] = n_after_complex_filter
+    interactions.attrs["n_after_sequence_filter"] = int(len(interactions))
+    interactions.attrs["require_sequences"] = bool(require_sequences)
+    return LRTrainingTable(interactions, proteins.reset_index(drop=True), set(positive_evidence))
 
 
 def _load_species_proteins(protein_fasta_by_species: Mapping[str, str | Path]) -> pd.DataFrame:
@@ -104,6 +114,18 @@ def _drop_partial_complexes(interactions: pd.DataFrame) -> pd.DataFrame:
         out["receptor_sequence"] = ""
     missing_sequence = (out["ligand_sequence"].astype(str) == "") | (out["receptor_sequence"].astype(str) == "")
     return out[~((complex_mask & missing_sequence) | incomplete_subunit_metadata)].copy()
+
+
+def _filter_complete_sequences(interactions: pd.DataFrame) -> pd.DataFrame:
+    out = interactions.copy()
+    for col in ("ligand_sequence", "receptor_sequence"):
+        if col not in out.columns:
+            raise ValueError(f"`require_sequences=True` requires `{col}` in the training table.")
+    complete = (out["ligand_sequence"].astype(str).str.strip() != "") & (out["receptor_sequence"].astype(str).str.strip() != "")
+    filtered = out[complete].copy()
+    if filtered.empty:
+        raise ValueError("No LR training rows have both ligand and receptor protein sequences.")
+    return filtered
 
 
 def _complex_name_mask(values: pd.Series) -> pd.Series:

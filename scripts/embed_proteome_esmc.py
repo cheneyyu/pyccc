@@ -20,6 +20,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--pooling", default="mean")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-sequence-length", type=int, default=2048)
     args = parser.parse_args()
     proteins = pc.load_protein_fasta(args.protein_fasta) if args.protein_fasta else pd.read_csv(args.protein_table, sep="\t")
     embeddings = pc.embed_proteins_esmc(
@@ -31,6 +32,7 @@ def main() -> None:
         cache_dir=args.cache_dir,
         backend=args.backend,
         batch_size=args.batch_size,
+        max_sequence_length=args.max_sequence_length,
     )
     out = embeddings.copy()
     out["embedding"] = out["embedding"].map(lambda value: ",".join(f"{float(x):.7g}" for x in value))
