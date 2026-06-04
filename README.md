@@ -333,7 +333,7 @@ Experimental DB-free target-species CCC API:
 ```python
 predicted_db = pc.predict_lr_dbfree(
     adata,
-    protein_fasta="target.longest_protein.fa",
+    protein_sequence_key="protein_sequence",  # or cds_sequence_key="cds"
     gene_id_key="gene_id",
     species_name="target_species",
     density_prior="auto",
@@ -351,6 +351,12 @@ res = pc.compute_communication(
     score_method="cellchat",
 )
 ```
+
+Sequence input can come from a FASTA file (`protein_fasta=` or `cds_fasta=`)
+or directly from `adata.var`. For example, add `adata.var["cds"]` and call
+`predict_lr_dbfree(..., cds_sequence_key="cds", gene_id_key="gene_id")`; CDS
+records are translated before ESMC embedding. If you already have amino-acid
+sequences, use `protein_sequence_key="protein_sequence"` instead.
 
 The universal LightGBM role and pair models are bundled with the Python package,
 so `predict_lr_dbfree(...)` works after a normal `pyccc[predict]` install unless

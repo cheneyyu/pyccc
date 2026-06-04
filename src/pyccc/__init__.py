@@ -16,7 +16,7 @@ from .pair_features import LRPairFeatures, make_lr_pair_features
 from .report import save_cellchat_report
 from .interactive import interactive_pathway_river, interactive_pattern_river, save_interactive_html
 from .roles import predict_protein_roles, train_protein_role_classifier
-from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes
+from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes, protein_table_from_adata_var
 from .spatial_validation import SpatialValidationReport, validate_spatial_lr_table
 from .training_data import LRTrainingTable, build_lr_training_table
 
@@ -66,6 +66,7 @@ __all__ = [
     "load_training_lr_resources",
     "make_lr_pair_features",
     "match_expression_genes",
+    "protein_table_from_adata_var",
     "pairwise_pathway_embedding",
     "predict_lr_dbfree",
     "predict_protein_roles",

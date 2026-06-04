@@ -14,7 +14,7 @@ from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
 from .model_resources import DEFAULT_DBFREE_PAIR_MODEL, DEFAULT_DBFREE_ROLE_MODEL, resolve_dbfree_model_path
 from .pair_features import make_lr_pair_features
 from .roles import predict_protein_roles
-from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes
+from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes, protein_table_from_adata_var
 
 
 DBFREE_STACK_NAME = "esmc300m_lgbm_role_classifiers_lgbm_pair_ranker_clade_density_v0"
@@ -386,7 +386,11 @@ def predict_lr_dbfree(
     *,
     cds_fasta: str | Path | None = None,
     protein_fasta: str | Path | None = None,
+    cds_sequence_key: str | None = None,
+    protein_sequence_key: str | None = None,
     gene_id_key: str | None = None,
+    protein_id_key: str | None = None,
+    transcript_id_key: str | None = None,
     species_name: str = "target_species",
     species_hint: str = "unknown",
     model: str | Path = DEFAULT_DBFREE_PAIR_MODEL,
@@ -406,10 +410,24 @@ def predict_lr_dbfree(
     receptor_candidates: str | Path | Sequence[str] | None = None,
     **candidate_kwargs,
 ):
-    """Predict a target-species candidate LR table, then return CellChatDB."""
+    """Predict a target-species candidate LR table, then return CellChatDB.
 
-    if (cds_fasta is None) == (protein_fasta is None):
-        raise ValueError("Provide exactly one of `cds_fasta` or `protein_fasta`.")
+    Sequence input can come from exactly one source: ``protein_fasta``,
+    ``cds_fasta``, ``protein_sequence_key`` in ``adata.var``, or
+    ``cds_sequence_key`` in ``adata.var``. CDS inputs are translated before
+    embedding. When sequence columns live in ``adata.var``, ``gene_id_key``
+    controls which expression gene IDs are attached to those sequences.
+    """
+
+    sequence_sources = {
+        "cds_fasta": cds_fasta,
+        "protein_fasta": protein_fasta,
+        "cds_sequence_key": cds_sequence_key,
+        "protein_sequence_key": protein_sequence_key,
+    }
+    provided_sources = [name for name, value in sequence_sources.items() if value is not None]
+    if len(provided_sources) != 1:
+        raise ValueError("Provide exactly one of `cds_fasta`, `protein_fasta`, `cds_sequence_key`, or `protein_sequence_key`.")
     role_model_bypassed = _role_model_bypassed(role_model, ligand_candidates, receptor_candidates)
     _validate_dbfree_prediction_stack(
         model=model,
@@ -420,7 +438,16 @@ def predict_lr_dbfree(
         embedding_model_name=embedding_model_name,
         allow_fixture_models=allow_fixture_models,
     )
-    proteins = load_cds_translations(cds_fasta) if cds_fasta is not None else load_protein_fasta(protein_fasta)
+    proteins, sequence_source = _load_dbfree_proteins(
+        adata,
+        cds_fasta=cds_fasta,
+        protein_fasta=protein_fasta,
+        cds_sequence_key=cds_sequence_key,
+        protein_sequence_key=protein_sequence_key,
+        gene_id_key=gene_id_key,
+        protein_id_key=protein_id_key,
+        transcript_id_key=transcript_id_key,
+    )
     gene_match = match_expression_genes(adata, proteins, gene_id_key=gene_id_key)
     gene_match_summary = _gene_match_summary(gene_match)
     emb = embed_proteins_esmc(
@@ -484,6 +511,7 @@ def predict_lr_dbfree(
         "role_model_bypassed": bool(role_model_bypassed),
         "pair_model": str(resolved_model),
         "pair_model_name": pair_metadata["model_name"],
+        "sequence_source": sequence_source,
         "density_prior": "auto_from_pair_model" if isinstance(density_prior, str) and density_prior == "auto" else "user_supplied",
         "density_groupby": "clade",
         "allow_fixture_models": bool(allow_fixture_models),
@@ -499,6 +527,7 @@ def predict_lr_dbfree(
         summary["role_model_bypassed"] = bool(role_model_bypassed)
         summary["pair_model"] = str(resolved_model)
         summary["pair_model_name"] = pair_metadata["model_name"]
+        summary["sequence_source"] = sequence_source
         summary["density_groupby"] = "clade"
         summary["allow_fixture_models"] = bool(allow_fixture_models)
         for key, value in gene_match_summary.items():
@@ -517,6 +546,46 @@ def predict_lr_dbfree(
     if extra_warnings:
         _add_prediction_warnings(db, extra_warnings)
     return db
+
+
+def _load_dbfree_proteins(
+    adata,
+    *,
+    cds_fasta: str | Path | None,
+    protein_fasta: str | Path | None,
+    cds_sequence_key: str | None,
+    protein_sequence_key: str | None,
+    gene_id_key: str | None,
+    protein_id_key: str | None,
+    transcript_id_key: str | None,
+) -> tuple[pd.DataFrame, str]:
+    if cds_fasta is not None:
+        return load_cds_translations(cds_fasta), f"cds_fasta:{cds_fasta}"
+    if protein_fasta is not None:
+        return load_protein_fasta(protein_fasta), f"protein_fasta:{protein_fasta}"
+    if cds_sequence_key is not None:
+        return (
+            protein_table_from_adata_var(
+                adata,
+                gene_id_key=gene_id_key,
+                cds_sequence_key=cds_sequence_key,
+                protein_id_key=protein_id_key,
+                transcript_id_key=transcript_id_key,
+            ),
+            f"adata.var:{cds_sequence_key}",
+        )
+    if protein_sequence_key is not None:
+        return (
+            protein_table_from_adata_var(
+                adata,
+                gene_id_key=gene_id_key,
+                protein_sequence_key=protein_sequence_key,
+                protein_id_key=protein_id_key,
+                transcript_id_key=transcript_id_key,
+            ),
+            f"adata.var:{protein_sequence_key}",
+        )
+    raise ValueError("Provide exactly one DB-free sequence source.")
 
 
 def _role_model_bypassed(

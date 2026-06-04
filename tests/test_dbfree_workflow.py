@@ -77,6 +77,90 @@ def test_dbfree_toy_prediction_runs_through_compute_communication(tmp_path):
     assert not result.interactions.empty
 
 
+def test_dbfree_prediction_can_read_protein_sequences_from_var():
+    adata = AnnData(
+        np.array([[4, 0, 1, 2], [5, 0, 1, 2], [0, 3, 1, 2], [0, 4, 1, 2]], dtype=float),
+        obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"]}, index=[f"c{i}" for i in range(4)]),
+        var=pd.DataFrame(
+            {
+                "gene_id": ["L1", "R1", "X1", "EONLY"],
+                "aa": ["MCCCCCC", "MAVVVVVVVVVVVVV", "MAAAAA", ""],
+                "protein_id": ["pL", "pR", "pX", ""],
+            },
+            index=["L1", "R1", "X1", "EONLY"],
+        ),
+    )
+
+    predicted = pc.predict_lr_dbfree(
+        adata,
+        protein_sequence_key="aa",
+        protein_id_key="protein_id",
+        gene_id_key="gene_id",
+        species_name="toy",
+        model="heuristic",
+        role_model="heuristic",
+        embedding_backend="hash",
+        allow_fixture_models=True,
+        density_prior=1.0,
+        min_score=0.0,
+        max_pairs=3,
+        max_pairs_per_ligand=1,
+        max_pairs_per_receptor=1,
+        allow_low_score_density_fill=True,
+        expression_min_fraction=0.0,
+    )
+
+    proteins = predicted.metadata["proteins"]
+    assert set(proteins["gene_id"]) == {"L1", "R1", "X1"}
+    assert predicted.metadata["dbfree_model_stack"]["sequence_source"] == "adata.var:aa"
+    assert predicted.metadata["gene_match_summary"]["n_expression_only_genes"] == 1
+    assert predicted.metadata["prediction_summary"].loc[0, "sequence_source"] == "adata.var:aa"
+    assert not predicted.interactions.empty
+
+
+def test_dbfree_prediction_can_translate_cds_sequences_from_var():
+    adata = AnnData(
+        np.array([[4, 0, 1], [5, 0, 1], [0, 3, 1], [0, 4, 1]], dtype=float),
+        obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"]}, index=[f"c{i}" for i in range(4)]),
+        var=pd.DataFrame(
+            {
+                "gene_id": ["L1", "R1", "X1"],
+                "cds": [
+                    "ATGTGCTGCTGCTGCTGCTAA",
+                    "ATGGCGGTGGTGGTGGTGTAA",
+                    "ATGGCGGCGGCGTAA",
+                ],
+            },
+            index=["L1", "R1", "X1"],
+        ),
+    )
+
+    predicted = pc.predict_lr_dbfree(
+        adata,
+        cds_sequence_key="cds",
+        gene_id_key="gene_id",
+        species_name="toy",
+        model="heuristic",
+        role_model="heuristic",
+        embedding_backend="hash",
+        allow_fixture_models=True,
+        density_prior=1.0,
+        min_score=0.0,
+        max_pairs=3,
+        max_pairs_per_ligand=1,
+        max_pairs_per_receptor=1,
+        allow_low_score_density_fill=True,
+        expression_min_fraction=0.0,
+    )
+
+    proteins = predicted.metadata["proteins"]
+    assert set(proteins["gene_id"]) == {"L1", "R1", "X1"}
+    assert proteins["protein_sequence"].str.startswith("M").all()
+    assert (proteins["cds_length"] > 0).all()
+    assert predicted.metadata["dbfree_model_stack"]["sequence_source"] == "adata.var:cds"
+    assert not predicted.interactions.empty
+
+
 def test_dbfree_production_stack_rejects_implicit_fixture_models(tmp_path):
     fasta = tmp_path / "proteins.fa"
     fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVVV\n", encoding="utf-8")

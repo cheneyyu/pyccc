@@ -153,6 +153,79 @@ def load_protein_fasta(
     return _select_isoforms(frame, select=select)
 
 
+def protein_table_from_adata_var(
+    adata,
+    *,
+    gene_id_key: str | None = None,
+    protein_sequence_key: str | None = None,
+    cds_sequence_key: str | None = None,
+    protein_id_key: str | None = None,
+    transcript_id_key: str | None = None,
+    genetic_code: int = 1,
+    select: str = "longest",
+) -> pd.DataFrame:
+    """Build a DB-free protein table from sequence columns in ``adata.var``.
+
+    Provide exactly one of ``protein_sequence_key`` or ``cds_sequence_key``.
+    CDS sequences are translated with the standard genetic code.
+    """
+
+    if (protein_sequence_key is None) == (cds_sequence_key is None):
+        raise ValueError("Provide exactly one of `protein_sequence_key` or `cds_sequence_key`.")
+    if genetic_code != 1:
+        raise ValueError("Only the standard genetic code (`genetic_code=1`) is supported in this release.")
+    var = adata.var
+    sequence_key = protein_sequence_key or cds_sequence_key
+    if sequence_key not in var:
+        raise KeyError(f"`{sequence_key}` is not present in adata.var.")
+    if gene_id_key is not None and gene_id_key not in var:
+        raise KeyError(f"`{gene_id_key}` is not present in adata.var.")
+    if protein_id_key is not None and protein_id_key not in var:
+        raise KeyError(f"`{protein_id_key}` is not present in adata.var.")
+    if transcript_id_key is not None and transcript_id_key not in var:
+        raise KeyError(f"`{transcript_id_key}` is not present in adata.var.")
+
+    gene_ids = var[gene_id_key].astype(str).to_numpy() if gene_id_key is not None else adata.var_names.astype(str)
+    protein_ids = var[protein_id_key].astype(str).to_numpy() if protein_id_key is not None else gene_ids
+    transcript_ids = var[transcript_id_key].astype(str).to_numpy() if transcript_id_key is not None else protein_ids
+    sequences = var[sequence_key].fillna("").astype(str).to_numpy()
+    records = []
+    for gene_id, protein_id, transcript_id, raw_sequence in zip(gene_ids, protein_ids, transcript_ids, sequences, strict=True):
+        if str(raw_sequence).strip() == "":
+            continue
+        if cds_sequence_key is not None:
+            cds = _clean_dna(str(raw_sequence))
+            protein = _translate_cds(cds)
+            stop_count = protein.count("*")
+            valid = len(cds) > 0 and len(cds) % 3 == 0 and "N" not in cds and stop_count <= 1 and (stop_count == 0 or protein.endswith("*"))
+            protein_sequence = protein.rstrip("*")
+            cds_sequence = cds
+        else:
+            protein = _clean_protein(str(raw_sequence))
+            stop_count = protein.count("*")
+            valid = bool(protein) and set(protein).issubset(VALID_AA)
+            protein_sequence = protein.rstrip("*")
+            cds_sequence = ""
+        records.append(
+            {
+                "gene_id": str(gene_id),
+                "transcript_id": str(transcript_id),
+                "protein_id": str(protein_id),
+                "cds_sequence": cds_sequence,
+                "protein_sequence": protein_sequence,
+                "cds_length": len(cds_sequence),
+                "protein_length": len(protein_sequence),
+                "stop_codon_count": stop_count,
+                "valid_translation": bool(valid),
+                "selected_isoform": False,
+            }
+        )
+    frame = pd.DataFrame(records)
+    if frame.empty:
+        raise ValueError(f"No non-empty sequences found in adata.var[`{sequence_key}`].")
+    return _select_isoforms(frame, select=select)
+
+
 def match_expression_genes(adata, proteins: pd.DataFrame, *, gene_id_key: str | None = None) -> pd.DataFrame:
     """Report which protein-table genes match the expression matrix identifiers."""
 

@@ -30,11 +30,43 @@ Required inputs:
 
 - AnnData expression matrix,
 - gene identifiers matching `adata.var_names` or `adata.var[gene_id_key]`,
-- CDS FASTA or longest protein FASTA,
+- CDS/protein sequences in FASTA or in `adata.var`,
 - trained LightGBM role-classifier and pair-ranker models, or explicit
   candidate lists.
 
 ## Sequence Preparation
+
+The shortest path is to store sequences in `adata.var` and point
+`predict_lr_dbfree(...)` at that column:
+
+```python
+adata.var["cds"] = cds_by_gene.reindex(adata.var["gene_id"]).to_numpy()
+
+predicted_db = pc.predict_lr_dbfree(
+    adata,
+    cds_sequence_key="cds",
+    gene_id_key="gene_id",
+    species_name="target_species",
+    density_prior="auto",
+)
+```
+
+Use `protein_sequence_key="protein_sequence"` if `adata.var` already contains
+amino-acid sequences. Optional `protein_id_key` and `transcript_id_key` columns
+are preserved in the generated protein table. Empty sequence cells are skipped
+and reported as expression-only genes in the gene-match summary.
+
+You can inspect the generated protein table directly:
+
+```python
+proteins = pc.protein_table_from_adata_var(
+    adata,
+    cds_sequence_key="cds",
+    gene_id_key="gene_id",
+)
+```
+
+FASTA inputs are still supported when sequence metadata lives outside AnnData:
 
 ```python
 proteins = pc.load_cds_translations(
@@ -198,7 +230,7 @@ print(density_gates.attrs["passed"])
 ```python
 predicted_db = pc.predict_lr_dbfree(
     adata,
-    protein_fasta="target.longest_protein.fa",
+    protein_sequence_key="protein_sequence",  # or cds_sequence_key="cds"
     gene_id_key="gene_id",
     species_name="target_species",
     species_hint="unknown",
@@ -219,6 +251,13 @@ res = pc.compute_communication(
     score_method="cellchat",
 )
 ```
+
+For file-based input, replace the sequence-key argument with exactly one of
+`protein_fasta="target.longest_protein.fa"` or
+`cds_fasta="target.longest_cds.fa"`. The four sequence sources are mutually
+exclusive so the provenance stored in
+`predicted_db.metadata["dbfree_model_stack"]["sequence_source"]` remains
+unambiguous.
 
 `compute_communication` remains deterministic. It does not infer LR pairs
 silently; prediction is an explicit upstream step.
