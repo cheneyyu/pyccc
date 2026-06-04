@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tarfile
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,26 @@ FORBIDDEN_FINAL_WARNINGS = {
     "heuristic_pair_ranker",
     "default_unknown_density",
 }
+REQUIRED_SPATIAL_OUTPUTS = (
+    "spatial_validation_summary.tsv",
+    "spatial_validation_celltype_pair_summary.tsv",
+    "spatial_validation_null_distribution.tsv",
+    "spatial_validation_top_k_enrichment.tsv",
+    "spatial_validation_role_kernel_enrichment.tsv",
+    "spatial_validation_distance_decay.tsv",
+    "spatial_validation_section_reproducibility.tsv",
+)
+REQUIRED_VALIDATION_STRATEGIES = {"dbfree", "role_only", "embedding_cosine", "expression_only"}
+REQUIRED_DOWNLOAD_COLUMNS = {"asset_type", "dataset", "section_id", "source_url", "local_path", "actual_bytes", "sha256", "status", "downloaded_at"}
+REQUIRED_LEGEND_PHRASES = (
+    "computational candidates",
+    "plausibility evidence",
+    "null models",
+    "permutations",
+    "cell",
+    "groups",
+    "lr pairs",
+)
 
 
 def main() -> None:
@@ -41,6 +62,7 @@ def main() -> None:
 def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[str, object]]:
     dataset = str(manifest["name"])
     rows = []
+    rows.append(_download_manifest_gate(manifest, results_dir))
     rows.append(_gate(dataset, "data", "section_qc_exists", (results_dir / "section_qc.tsv").exists(), str(results_dir / "section_qc.tsv")))
     if (results_dir / "section_qc.tsv").exists():
         qc = pd.read_csv(results_dir / "section_qc.tsv", sep="\t")
@@ -48,8 +70,11 @@ def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[s
         rows.append(_required_sections_gate(manifest, qc))
         rows.append(_gate(dataset, "data", "standard_columns_present", _qc_standard_columns_pass(qc), "pyccc_group, section_id, spatial, gene_id recorded by prepare script"))
     rows.append(_gene_gate(manifest, results_dir))
+    rows.append(_predicted_lr_gene_coverage_gate(manifest, results_dir))
     rows.extend(_model_artifact_gates(manifest, results_dir))
     rows.append(_model_warning_gate(dataset, results_dir))
+    rows.append(_spatial_output_files_gate(dataset, results_dir))
+    rows.append(_spatial_design_gate(manifest, results_dir))
     if dataset == "artista_axolotl":
         rows.append(_artista_spatial_gate(dataset, results_dir))
     elif dataset == "sota_soybean":
@@ -57,6 +82,58 @@ def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[s
     else:
         rows.append(_generic_spatial_gate(dataset, results_dir))
     return rows
+
+
+def _download_manifest_gate(manifest: dict[str, object], results_dir: Path) -> dict[str, object]:
+    dataset = str(manifest["name"])
+    manifests = []
+    for path in (results_dir / "download_manifest.tsv", results_dir.parent / "download_manifest.tsv"):
+        if path.exists():
+            manifests.append(pd.read_csv(path, sep="\t"))
+    if not manifests:
+        return _gate(dataset, "data", "download_manifest_complete", False, str(results_dir / "download_manifest.tsv"))
+    downloads = pd.concat(manifests, ignore_index=True, sort=False)
+    downloads = downloads[_text_column(downloads, "dataset") == dataset].copy()
+    if downloads.empty:
+        return _gate(dataset, "data", "download_manifest_complete", False, f"dataset={dataset}")
+    missing_columns = sorted(REQUIRED_DOWNLOAD_COLUMNS - set(downloads.columns))
+    required_sections = _required_download_sections(manifest)
+    present_sections = set(_text_column(downloads[_text_column(downloads, "asset_type") == "spatial_h5ad"], "section_id"))
+    missing_sections = sorted(required_sections - present_sections)
+    needs_proteome = bool(manifest.get("protein_source") or manifest.get("protein_fasta"))
+    proteome_present = "proteome" in set(_text_column(downloads, "section_id"))
+    complete_rows = _download_rows_are_complete(downloads) if not missing_columns else False
+    passed = not missing_columns and not missing_sections and (proteome_present or not needs_proteome) and complete_rows
+    evidence = (
+        f"rows={len(downloads)}; missing_columns={','.join(missing_columns)}; "
+        f"missing_sections={','.join(missing_sections)}; proteome_present={proteome_present}; complete_rows={complete_rows}"
+    )
+    return _gate(dataset, "data", "download_manifest_complete", passed, evidence)
+
+
+def _required_download_sections(manifest: dict[str, object]) -> set[str]:
+    required = [str(item) for item in manifest.get("required_final_sections", [])]
+    if required:
+        return set(required)
+    return {str(section.get("name")) for section in manifest.get("sections", []) if section.get("name")}
+
+
+def _download_rows_are_complete(downloads: pd.DataFrame) -> bool:
+    if downloads.empty or not REQUIRED_DOWNLOAD_COLUMNS.issubset(downloads.columns):
+        return False
+    frame = downloads.copy()
+    status_ok = frame["status"].fillna("").astype(str).eq("ok").all()
+    bytes_ok = pd.to_numeric(frame["actual_bytes"], errors="coerce").fillna(0).gt(0).all()
+    sha_ok = frame["sha256"].fillna("").astype(str).str.len().ge(32).all()
+    url_ok = frame["source_url"].fillna("").astype(str).str.len().gt(0).all()
+    time_ok = frame["downloaded_at"].fillna("").astype(str).str.len().gt(0).all()
+    return bool(status_ok and bytes_ok and sha_ok and url_ok and time_ok)
+
+
+def _text_column(frame: pd.DataFrame, col: str) -> pd.Series:
+    if col not in frame:
+        return pd.Series([""] * len(frame), index=frame.index, dtype=str)
+    return frame[col].fillna("").astype(str)
 
 
 def _qc_standard_columns_pass(qc: pd.DataFrame) -> bool:
@@ -89,6 +166,34 @@ def _gene_gate(manifest: dict[str, object], results_dir: Path) -> dict[str, obje
     threshold = float(manifest.get("publishable_gene_match_min", 0.0))
     fraction = float(summary["matched_fraction"].iloc[0]) if not summary.empty and "matched_fraction" in summary else 0.0
     return _gate(dataset, "sequence", "gene_match_fraction", fraction >= threshold, f"matched_fraction={fraction:.3f}; threshold={threshold:.3f}")
+
+
+def _predicted_lr_gene_coverage_gate(manifest: dict[str, object], results_dir: Path) -> dict[str, object]:
+    dataset = str(manifest["name"])
+    predicted_path = results_dir / "predicted_lr.tsv"
+    match_path = results_dir / "gene_protein_match.tsv"
+    if not predicted_path.exists() or not match_path.exists():
+        return _gate(dataset, "sequence", "predicted_lr_gene_coverage", False, f"{predicted_path}; {match_path}")
+    predicted = pd.read_csv(predicted_path, sep="\t")
+    match = pd.read_csv(match_path, sep="\t")
+    if predicted.empty or not {"ligand", "receptor"}.issubset(predicted.columns) or "gene_id" not in match:
+        return _gate(dataset, "sequence", "predicted_lr_gene_coverage", False, "missing ligand/receptor or gene_id columns")
+    predicted_genes = set(predicted["ligand"].astype(str)).union(set(predicted["receptor"].astype(str)))
+    if "in_expression" in match:
+        expression_genes = set(match.loc[match["in_expression"].astype(bool), "gene_id"].astype(str))
+    else:
+        expression_genes = set(match["gene_id"].astype(str))
+    covered = len(predicted_genes & expression_genes)
+    total = len(predicted_genes)
+    fraction = covered / total if total else 0.0
+    threshold = float(manifest.get("predicted_lr_gene_match_min", 0.70))
+    return _gate(
+        dataset,
+        "sequence",
+        "predicted_lr_gene_coverage",
+        fraction >= threshold,
+        f"covered={covered}; total={total}; fraction={fraction:.3f}; threshold={threshold:.3f}",
+    )
 
 
 def _model_warning_gate(dataset: str, results_dir: Path) -> dict[str, object]:
@@ -310,6 +415,43 @@ def _sota_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:
     return _gate(dataset, "spatial", "sota_feasibility_gate", passing["section_id"].nunique() >= 1, f"passing_sections={passing['section_id'].nunique() if not passing.empty else 0}")
 
 
+def _spatial_output_files_gate(dataset: str, results_dir: Path) -> dict[str, object]:
+    missing = [name for name in REQUIRED_SPATIAL_OUTPUTS if not (results_dir / name).exists()]
+    return _gate(dataset, "spatial", "required_spatial_output_files", not missing, "missing=" + ",".join(missing))
+
+
+def _spatial_design_gate(manifest: dict[str, object], results_dir: Path) -> dict[str, object]:
+    dataset = str(manifest["name"])
+    topk = _topk(results_dir)
+    if topk.empty:
+        return _gate(dataset, "spatial", "topk_design_complete", False, str(results_dir / "spatial_validation_top_k_enrichment.tsv"))
+    spatial_cfg = dict(manifest.get("spatial_validation", {}))
+    required_columns = {"kernel", "score_type", "null_model", "k", "validation_strategy", "n_permutations", "random_seed", "observed_mean", "null_mean", "null_sd", "top_k_enrichment_z", "top_k_empirical_pvalue"}
+    missing_columns = sorted(required_columns - set(topk.columns))
+    kernels = set(topk.get("kernel", pd.Series(dtype=str)).astype(str))
+    nulls = set(topk.get("null_model", pd.Series(dtype=str)).astype(str))
+    strategies = set(topk.get("validation_strategy", pd.Series(dtype=str)).astype(str))
+    topks = {int(value) for value in pd.to_numeric(topk.get("k", pd.Series(dtype=int)), errors="coerce").dropna().astype(int)}
+    required_kernels = {str(item) for item in spatial_cfg.get("distance_kernels", ("contact", "exp"))}
+    required_nulls = {str(item) for item in spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"))}
+    required_topks = {int(item) for item in spatial_cfg.get("top_k", (100, 500, 1000, 5000))}
+    final_permutations = spatial_cfg.get("final_permutations")
+    max_permutations = int(pd.to_numeric(topk.get("n_permutations", pd.Series([0])), errors="coerce").fillna(0).max()) if "n_permutations" in topk else 0
+    permutation_ok = True if final_permutations is None else max_permutations >= int(final_permutations)
+    missing_kernels = sorted(required_kernels - kernels)
+    missing_nulls = sorted(required_nulls - nulls)
+    missing_strategies = sorted(REQUIRED_VALIDATION_STRATEGIES - strategies)
+    missing_topks = sorted(required_topks - topks)
+    passed = not missing_columns and not missing_kernels and not missing_nulls and not missing_strategies and not missing_topks and permutation_ok
+    evidence = (
+        f"missing_columns={','.join(missing_columns)}; missing_kernels={','.join(missing_kernels)}; "
+        f"missing_nulls={','.join(missing_nulls)}; missing_strategies={','.join(missing_strategies)}; "
+        f"missing_topk={','.join(str(item) for item in missing_topks)}; max_permutations={max_permutations}; "
+        f"final_permutations={final_permutations if final_permutations is not None else ''}"
+    )
+    return _gate(dataset, "spatial", "topk_design_complete", passed, evidence)
+
+
 def _generic_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:
     topk = _topk(results_dir)
     return _gate(dataset, "spatial", "topk_table_exists", not topk.empty, str(results_dir / "spatial_validation_top_k_enrichment.tsv"))
@@ -342,11 +484,51 @@ def _global_rows(results_root: Path, figures_dir: Path) -> list[dict[str, object
         "dbfree_spatial_validation_main.pdf",
         "dbfree_spatial_validation_main_legend.md",
         "dbfree_spatial_validation_main_source_tables.tar.gz",
+        "dbfree_spatial_validation_source_tables.tar.gz",
     ]
     return [
         _gate("global", "figure", "main_figure_outputs_exist", all((figures_dir / name).exists() for name in required), str(figures_dir)),
+        _figure_legend_gate(figures_dir),
+        _source_tarball_gate(results_root, figures_dir),
         _gate("global", "reproducibility", "baseline_tables_exist", (results_root / "baseline_comparison.tsv").exists() and (results_root / "baseline_topk_enrichment.tsv").exists(), str(results_root)),
     ]
+
+
+def _figure_legend_gate(figures_dir: Path) -> dict[str, object]:
+    path = figures_dir / "dbfree_spatial_validation_main_legend.md"
+    if not path.exists():
+        return _gate("global", "figure", "main_figure_legend_complete", False, str(path))
+    text = path.read_text(encoding="utf-8").lower()
+    missing = [phrase for phrase in REQUIRED_LEGEND_PHRASES if phrase not in text]
+    return _gate("global", "figure", "main_figure_legend_complete", not missing, "missing=" + ",".join(missing))
+
+
+def _source_tarball_gate(results_root: Path, figures_dir: Path) -> dict[str, object]:
+    path = figures_dir / "dbfree_spatial_validation_main_source_tables.tar.gz"
+    if not path.exists():
+        return _gate("global", "reproducibility", "source_tables_tarball_complete", False, str(path))
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            names = set(archive.getnames())
+    except tarfile.TarError as exc:
+        return _gate("global", "reproducibility", "source_tables_tarball_complete", False, str(exc))
+    required = {"baseline_comparison.tsv", "baseline_topk_enrichment.tsv"}
+    for dataset_dir in _dataset_result_dirs(results_root):
+        dataset = dataset_dir.name
+        required.update(
+            {
+                f"{dataset}/spatial_validation_summary.tsv",
+                f"{dataset}/spatial_validation_top_k_enrichment.tsv",
+                f"{dataset}/spatial_validation_distance_decay.tsv",
+                f"{dataset}/validation_model_card.tsv",
+            }
+        )
+    missing = sorted(required - names)
+    return _gate("global", "reproducibility", "source_tables_tarball_complete", not missing, "missing=" + ",".join(missing))
+
+
+def _dataset_result_dirs(results_root: Path) -> list[Path]:
+    return [path.parent for path in sorted(results_root.glob("*/spatial_validation_top_k_enrichment.tsv"))]
 
 
 def _gate(dataset: str, category: str, gate: str, passed: bool, evidence: str) -> dict[str, object]:

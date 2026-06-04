@@ -177,14 +177,11 @@ The pipeline writes:
 - `results/dbfree_validation/*/prediction_summary.tsv`
 - `results/dbfree_validation/*/spatial_validation_summary.tsv`
 - `results/dbfree_validation/*/spatial_validation_celltype_pair_summary.tsv`
-  when `write_celltype_pair_summary` is enabled
 - `results/dbfree_validation/*/spatial_validation_null_distribution.tsv`
-  when `write_null_distribution` is enabled
 - `results/dbfree_validation/*/spatial_validation_top_k_enrichment.tsv`
+- `results/dbfree_validation/*/spatial_validation_role_kernel_enrichment.tsv`
 - `results/dbfree_validation/*/spatial_validation_distance_decay.tsv`
-  when `compute_distance_decay` is enabled
 - `results/dbfree_validation/*/spatial_validation_section_reproducibility.tsv`
-  when `compute_section_reproducibility` is enabled
 - `results/dbfree_validation/baseline_comparison.tsv`
 - `results/dbfree_validation/baseline_topk_enrichment.tsv`
 - `figures/dbfree_spatial_validation_main.png`
@@ -192,7 +189,13 @@ The pipeline writes:
 - `figures/dbfree_spatial_validation_main.pdf`
 - `figures/dbfree_spatial_validation_main_legend.md`
 - `figures/dbfree_spatial_validation_main_source_tables.tar.gz`
+- `figures/dbfree_spatial_validation_source_tables.tar.gz`
 - `results/dbfree_validation/acceptance_report.tsv`
+
+In `--top-k-only` runs, very large diagnostic tables such as per-pair null
+distributions may be header-only when their corresponding write option is
+disabled. The files are still written so the source-table bundle and acceptance
+report have a stable schema.
 
 `spatial_validation_top_k_enrichment.tsv` includes a `null_model` column.
 Rows are written for each individual null model plus a `pooled` summary. The
@@ -215,9 +218,20 @@ positive DB-free enrichment over matched random LR.
 Gene/protein mapping gates are recorded in
 `gene_protein_match_summary.tsv`: ARTISTA requires at least 60 percent of
 expressed genes to map to target proteins, and SOTA requires at least
-70 percent.
+70 percent. The predicted LR table also has a separate expression-coverage
+gate: at least 70 percent of unique ligand/receptor genes in `predicted_lr.tsv`
+must be present in the prepared expression gene universe.
+
+The checker also verifies that the final top-K table contains both configured
+distance kernels, all configured null models, top-K thresholds, and the four
+main ranking strategies: DB-free, role-only, embedding-cosine, and
+expression-only. For the committed ARTISTA/SOTA manifests, final rows must use
+at least 1000 permutations.
 
 `check_dbfree_validation_acceptance.py` exits non-zero until all required
 data, sequence, model, spatial, figure, and reproducibility gates pass. This is
 expected during smoke tests before real target proteomes and trained models are
-available.
+available. Download manifests must record source URLs, local paths, byte sizes,
+SHA-256 checksums, status, and timestamps for required h5ad files and target
+proteomes. The source-table tarball and figure legend are checked for the
+minimum provenance/caveat content needed to reproduce the figure.

@@ -2,6 +2,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -241,6 +242,92 @@ def test_artista_acceptance_requires_role_only_control(tmp_path):
     assert "passing_sections=2" in passing["evidence"]
 
 
+def test_acceptance_reproducibility_design_gates(tmp_path):
+    checker = _load_script("check_dbfree_validation_acceptance")
+    manifest = {
+        "name": "toy_complete",
+        "species": "Toy species",
+        "protein_fasta": "toy.fa",
+        "protein_source": {"url": "https://example.org/toy.fa"},
+        "required_final_sections": ["S1", "S2"],
+        "predicted_lr_gene_match_min": 0.70,
+        "spatial_validation": {
+            "distance_kernels": ["contact", "exp"],
+            "null_models": ["coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"],
+            "top_k": [100, 500],
+            "final_permutations": 1000,
+        },
+    }
+    results_dir = tmp_path / "results" / "toy_complete"
+    figures_dir = tmp_path / "figures"
+    results_dir.mkdir(parents=True)
+    figures_dir.mkdir()
+
+    pd.DataFrame(
+        [
+            _download_row("toy_complete", "S1", "spatial_h5ad"),
+            _download_row("toy_complete", "S2", "spatial_h5ad"),
+            _download_row("toy_complete", "proteome", "protein_fasta"),
+        ]
+    ).to_csv(results_dir / "download_manifest.tsv", sep="\t", index=False)
+    pd.DataFrame({"ligand": ["L1", "L2"], "receptor": ["R1", "R2"]}).to_csv(results_dir / "predicted_lr.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        {
+            "gene_id": ["L1", "L2", "R1", "R2", "missing"],
+            "in_expression": [True, True, True, True, True],
+            "in_proteins": [True, True, True, True, False],
+        }
+    ).to_csv(results_dir / "gene_protein_match.tsv", sep="\t", index=False)
+    for name in checker.REQUIRED_SPATIAL_OUTPUTS:
+        (results_dir / name).write_text("placeholder\n", encoding="utf-8")
+    topk = pd.DataFrame(
+        [
+            _design_topk_row(kernel=kernel, null_model=null_model, strategy=strategy, k=k)
+            for kernel in ("contact", "exp")
+            for null_model in ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation")
+            for strategy in ("dbfree", "role_only", "embedding_cosine", "expression_only")
+            for k in (100, 500)
+        ]
+    )
+    topk.to_csv(results_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t", index=False)
+    (tmp_path / "results" / "baseline_comparison.tsv").write_text("placeholder\n", encoding="utf-8")
+    (tmp_path / "results" / "baseline_topk_enrichment.tsv").write_text("placeholder\n", encoding="utf-8")
+    legend = (
+        "Predicted LR edges are computational candidates. Spatial validation is plausibility evidence "
+        "with null models, cells, groups, LR pairs, and permutations."
+    )
+    (figures_dir / "dbfree_spatial_validation_main_legend.md").write_text(legend, encoding="utf-8")
+    for name in (
+        "dbfree_spatial_validation_main.png",
+        "dbfree_spatial_validation_main.svg",
+        "dbfree_spatial_validation_main.pdf",
+        "dbfree_spatial_validation_main_source_tables.tar.gz",
+        "dbfree_spatial_validation_source_tables.tar.gz",
+    ):
+        (figures_dir / name).write_text("placeholder\n", encoding="utf-8")
+    with tarfile.open(figures_dir / "dbfree_spatial_validation_main_source_tables.tar.gz", "w:gz") as archive:
+        for relative in (
+            "baseline_comparison.tsv",
+            "baseline_topk_enrichment.tsv",
+            "toy_complete/spatial_validation_summary.tsv",
+            "toy_complete/spatial_validation_top_k_enrichment.tsv",
+            "toy_complete/spatial_validation_distance_decay.tsv",
+            "toy_complete/validation_model_card.tsv",
+        ):
+            source = tmp_path / relative.replace("/", "_")
+            source.write_text("placeholder\n", encoding="utf-8")
+            archive.add(source, arcname=relative)
+
+    assert checker._download_manifest_gate(manifest, results_dir)["passed"]
+    assert checker._predicted_lr_gene_coverage_gate(manifest, results_dir)["passed"]
+    assert checker._spatial_output_files_gate("toy_complete", results_dir)["passed"]
+    assert checker._spatial_design_gate(manifest, results_dir)["passed"]
+    global_rows = {row["gate"]: row for row in checker._global_rows(tmp_path / "results", figures_dir)}
+    assert global_rows["main_figure_outputs_exist"]["passed"]
+    assert global_rows["main_figure_legend_complete"]["passed"]
+    assert global_rows["source_tables_tarball_complete"]["passed"]
+
+
 def _topk_row(section: str, *, strategy: str, z: float, p: float, k: int) -> dict[str, object]:
     return {
         "section_id": section,
@@ -251,6 +338,37 @@ def _topk_row(section: str, *, strategy: str, z: float, p: float, k: int) -> dic
         "k": k,
         "top_k_enrichment_z": z,
         "top_k_empirical_pvalue": p,
+    }
+
+
+def _download_row(dataset: str, section_id: str, asset_type: str) -> dict[str, object]:
+    return {
+        "asset_type": asset_type,
+        "dataset": dataset,
+        "section_id": section_id,
+        "source_url": f"https://example.org/{section_id}",
+        "local_path": f"data/{section_id}",
+        "actual_bytes": 123,
+        "sha256": "a" * 64,
+        "status": "ok",
+        "downloaded_at": "2026-06-04T00:00:00+00:00",
+    }
+
+
+def _design_topk_row(*, kernel: str, null_model: str, strategy: str, k: int) -> dict[str, object]:
+    return {
+        "kernel": kernel,
+        "score_type": "model_weighted_spatial_ccc_score",
+        "null_model": null_model,
+        "k": k,
+        "validation_strategy": strategy,
+        "n_permutations": 1000,
+        "random_seed": 0,
+        "observed_mean": 1.0,
+        "null_mean": 0.5,
+        "null_sd": 0.1,
+        "top_k_enrichment_z": 5.0,
+        "top_k_empirical_pvalue": 0.001,
     }
 
 
