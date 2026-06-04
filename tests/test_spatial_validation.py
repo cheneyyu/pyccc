@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 import pyccc as pc
 import pyccc.plotting as cp
-from pyccc.spatial_validation import _distance_matrix_cache, _permute_groups_for_celltype_null, _spatial_weight_tables
+from pyccc.spatial_validation import _distance_matrix_cache, _matched_random_lr, _permute_groups_for_celltype_null, _spatial_weight_tables
 
 
 @pytest.mark.spatial
@@ -103,6 +103,27 @@ def test_celltype_null_permutation_can_be_section_stratified():
         assert sorted(permuted[mask].tolist()) == sorted(groups[mask].tolist())
 
 
+def test_matched_random_lr_preserves_weighting_metadata():
+    lr = pd.DataFrame(
+        {
+            "ligand": ["L1", "L2"],
+            "receptor": ["R1", "R2"],
+            "model_score": [0.25, 0.75],
+            "confidence": [0.2, 0.7],
+            "density_rank": [1, 2],
+            "ligand_role_score": [0.8, 0.6],
+            "receptor_role_score": [0.7, 0.5],
+        }
+    )
+    expression = pd.Series({"L1": 1.0, "L2": 1.2, "R1": 0.8, "R2": 0.9, "G": 1.1})
+
+    matched = _matched_random_lr(lr, expression, np.random.default_rng(0))
+
+    assert {"model_score", "confidence", "density_rank", "ligand_role_score", "receptor_role_score"}.issubset(matched.columns)
+    assert matched["model_score"].tolist() == [0.25, 0.75]
+    assert matched["density_rank"].tolist() == [1, 2]
+
+
 def test_spatial_weight_tables_match_distance_cache():
     coords = np.array([[0, 0], [0, 1], [2, 0], [2, 2], [4, 0]], dtype=float)
     groups = np.array(["A", "A", "B", "B", "C"])
@@ -143,6 +164,29 @@ def test_spatial_validation_can_skip_slow_diagnostics():
     assert {"ligand", "receptor", "kernel", "n_sections", "top_k_section_fraction"}.issubset(report.section_reproducibility.columns)
     assert report.metadata["compute_distance_decay"] is False
     assert report.metadata["compute_section_reproducibility"] is False
+
+
+def test_spatial_validation_distance_decay_can_sample_cells():
+    adata = AnnData(
+        np.tile(np.array([[5, 0], [0, 4]], dtype=float), (5, 1)),
+        obs=pd.DataFrame({"cell_type": ["A", "B"] * 5}, index=[f"c{i}" for i in range(10)]),
+        var=pd.DataFrame(index=["L1", "R1"]),
+    )
+    adata.obsm["spatial"] = np.column_stack([np.arange(10, dtype=float), np.zeros(10)])
+    lr = pd.DataFrame({"ligand": ["L1"], "receptor": ["R1"], "model_score": [0.9]})
+
+    report = pc.validate_spatial_lr_table(
+        adata,
+        lr,
+        groupby="cell_type",
+        n_permutations=1,
+        compute_section_reproducibility=False,
+        distance_decay_max_cells=4,
+    )
+
+    assert report.metadata["distance_decay_max_cells"] == 4
+    assert not report.distance_decay.empty
+    assert report.distance_decay["mean_distance"].nunique() <= 5
 
 
 def test_stereoseq_cellbin_example_writes_report_and_plots(tmp_path):

@@ -1,0 +1,103 @@
+{
+  "model_name": "animal_esmc300m_lgbm_role_classifiers_v0",
+  "model_stack": "esmc300m_lgbm_role_classifiers_v0",
+  "model_type": "protein_role_classifier",
+  "classifier": "lightgbm",
+  "roles": [
+    "ligand_like",
+    "receptor_like",
+    "secreted_like",
+    "membrane_like"
+  ],
+  "n_training_proteins": 5895,
+  "embedding_model": {
+    "model_name": [
+      "biohub/esmc-300m-2024-12"
+    ],
+    "model_revision": [],
+    "embedding_backend": [
+      "esmc"
+    ],
+    "pooling": [
+      "mean"
+    ],
+    "n_embeddings": 5895
+  },
+  "validation_method": "stratified_holdout",
+  "validation_fraction": 0.25,
+  "metrics": {
+    "ligand_like": {
+      "n_positive": 1031,
+      "n_negative": 4864,
+      "prevalence": 0.17489397794741307,
+      "constant": false,
+      "validation_status": "ok",
+      "validation_n_train": 4421,
+      "validation_n_test": 1474,
+      "validation_pr_auc": 0.8481336583209771,
+      "validation_roc_auc": 0.9534660597715219,
+      "validation_baseline_pr_auc": 0.17503392130257803,
+      "validation_delta_pr_auc": 0.6730997370183991,
+      "validation_top_k_precision": {
+        "top_10": 1.0,
+        "top_100": 0.92,
+        "top_500": 0.482
+      }
+    },
+    "receptor_like": {
+      "n_positive": 926,
+      "n_negative": 4969,
+      "prevalence": 0.15708227311280745,
+      "constant": false,
+      "validation_status": "ok",
+      "validation_n_train": 4421,
+      "validation_n_test": 1474,
+      "validation_pr_auc": 0.9006299256735991,
+      "validation_roc_auc": 0.977695180187684,
+      "validation_baseline_pr_auc": 0.15739484396200815,
+      "validation_delta_pr_auc": 0.7432350817115909,
+      "validation_top_k_precision": {
+        "top_10": 1.0,
+        "top_100": 0.96,
+        "top_500": 0.46
+      }
+    },
+    "secreted_like": {
+      "n_positive": 1031,
+      "n_negative": 4864,
+      "prevalence": 0.17489397794741307,
+      "constant": false,
+      "validation_status": "ok",
+      "validation_n_train": 4421,
+      "validation_n_test": 1474,
+      "validation_pr_auc": 0.8481336583209771,
+      "validation_roc_auc": 0.9534660597715219,
+      "validation_baseline_pr_auc": 0.17503392130257803,
+      "validation_delta_pr_auc": 0.6730997370183991,
+      "validation_top_k_precision": {
+        "top_10": 1.0,
+        "top_100": 0.92,
+        "top_500": 0.482
+      }
+    },
+    "membrane_like": {
+      "n_positive": 926,
+      "n_negative": 4969,
+      "prevalence": 0.15708227311280745,
+      "constant": false,
+      "validation_status": "ok",
+      "validation_n_train": 4421,
+      "validation_n_test": 1474,
+      "validation_pr_auc": 0.9006299256735991,
+      "validation_roc_auc": 0.977695180187684,
+      "validation_baseline_pr_auc": 0.15739484396200815,
+      "validation_delta_pr_auc": 0.7432350817115909,
+      "validation_top_k_precision": {
+        "top_10": 1.0,
+        "top_100": 0.96,
+        "top_500": 0.46
+      }
+    }
+  },
+  "output_dir": "models/animal_esmc300m_lgbm_role_classifiers_v0"
+}

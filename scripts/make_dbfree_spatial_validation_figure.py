@@ -23,12 +23,12 @@ def main() -> None:
     topk = _read_optional(results_dir / "baseline_topk_enrichment.tsv")
     comparison = _read_optional(results_dir / "baseline_comparison.tsv")
     summary = _read_all_dataset_table(results_dir, "spatial_validation_summary.tsv")
-    prediction = _read_all_dataset_table(results_dir, "prediction_summary.tsv")
+    decay = _read_all_dataset_table(results_dir, "spatial_validation_distance_decay.tsv")
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
     _panel_workflow(axes[0, 0])
     _panel_topk(axes[0, 1], topk, dataset="artista_axolotl", title="B  ARTISTA top-K enrichment")
-    _panel_prediction_scale(axes[0, 2], prediction)
+    _panel_distance_decay(axes[0, 2], decay, dataset="artista_axolotl")
     _panel_spatial_example(axes[1, 0], summary, results_dir)
     _panel_topk(axes[1, 1], topk, dataset="sota_soybean", title="E  SOTA plant validation")
     _panel_comparison(axes[1, 2], comparison)
@@ -48,9 +48,19 @@ def _read_optional(path: Path) -> pd.DataFrame:
 
 def _read_all_dataset_table(results_dir: Path, name: str) -> pd.DataFrame:
     frames = []
-    for path in sorted(results_dir.glob(f"*/{name}")):
-        frames.append(pd.read_csv(path, sep="\t"))
+    for dataset_dir in _validated_dataset_dirs(results_dir):
+        path = dataset_dir / name
+        if path.exists():
+            frame = pd.read_csv(path, sep="\t")
+            if "dataset" not in frame.columns:
+                frame.insert(0, "dataset", dataset_dir.name)
+            if not frame.empty:
+                frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _validated_dataset_dirs(results_dir: Path) -> list[Path]:
+    return [path.parent for path in sorted(results_dir.glob("*/spatial_validation_summary.tsv"))]
 
 
 def _panel_workflow(ax) -> None:
@@ -122,21 +132,31 @@ def _panel_prediction_scale(ax, prediction: pd.DataFrame) -> None:
         frame["density_prior"] = pd.NA
     frame["selected_pair_count"] = pd.to_numeric(frame["selected_pair_count"], errors="coerce").fillna(0)
     frame["density_prior"] = pd.to_numeric(frame["density_prior"], errors="coerce")
-    frame = frame.sort_values("selected_pair_count")
+    frame = (
+        frame.sort_values(["dataset", "selected_pair_count"], ascending=[True, False])
+        .drop_duplicates("dataset", keep="first")
+        .sort_values("selected_pair_count")
+    )
     colors = ["#4c78a8", "#59a14f", "#f28e2b", "#e15759"]
-    ax.barh(frame["label"], frame["selected_pair_count"], color=colors[: len(frame)])
+    y = np.arange(len(frame))
+    ax.barh(y, frame["selected_pair_count"], color=colors[: len(frame)])
+    ax.set_yticks(y, frame["label"])
     ax.set_xlabel("Selected predicted LR pairs")
     xmax = max(float(frame["selected_pair_count"].max()) * 1.35, 1.0)
     ax.set_xlim(0, xmax)
     for i, row in enumerate(frame.itertuples(index=False)):
         density = getattr(row, "density_prior", float("nan"))
         text = f"{int(row.selected_pair_count):,} pairs; density {density:.3g}" if pd.notna(density) else f"{int(row.selected_pair_count):,} pairs"
-        ax.text(float(row.selected_pair_count) + xmax * 0.02, i, text, va="center", fontsize=8)
+        x = float(row.selected_pair_count)
+        if x > xmax * 0.55:
+            ax.text(x - xmax * 0.03, i, text, va="center", ha="right", fontsize=8)
+        else:
+            ax.text(min(x + xmax * 0.02, xmax * 0.98), i, text, va="center", ha="left", fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
 
 
 def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
-    ax.set_title("C  distance-decay", loc="left")
+    ax.set_title("C  ARTISTA distance-decay", loc="left")
     if decay.empty:
         _empty(ax, "No distance-decay table")
         return
@@ -144,13 +164,18 @@ def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
     if frame.empty:
         _empty(ax, f"No {dataset} rows")
         return
-    score_col = "model_weighted_spatial_ccc_score" if "model_weighted_spatial_ccc_score" in frame.columns else "spatial_ccc_score"
+    score_col = "model_weighted_mean_spatial_ccc_score" if "model_weighted_mean_spatial_ccc_score" in frame.columns else "mean_spatial_ccc_score"
+    if score_col not in frame.columns:
+        _empty(ax, "No distance-decay score")
+        return
     frame["distance_mid"] = (pd.to_numeric(frame["distance_min"], errors="coerce") + pd.to_numeric(frame["distance_max"], errors="coerce")) / 2.0
     for strategy, sub in frame.groupby("validation_strategy", sort=False):
         grouped = sub.groupby("distance_mid", as_index=False)[score_col].mean()
-        ax.plot(grouped["distance_mid"], grouped[score_col], marker="o", label=strategy)
+        far = float(grouped.sort_values("distance_mid")[score_col].iloc[-1])
+        values = grouped[score_col].to_numpy(dtype=float) / far if far > 0 else grouped[score_col].to_numpy(dtype=float)
+        ax.plot(grouped["distance_mid"], values, marker="o", label=strategy)
     ax.set_xlabel("Distance bin midpoint")
-    ax.set_ylabel("Mean spatial CCC")
+    ax.set_ylabel("Weighted CCC / far bin")
     ax.legend(frameon=False, fontsize=8)
 
 
@@ -191,7 +216,7 @@ def _panel_spatial_example(ax, summary: pd.DataFrame, results_dir: Path) -> None
         (_short_gene(receptor), _gene_vector(adata, receptor)),
     ]
     for i, (title, values) in enumerate(panels):
-        subax = ax.inset_axes([0.02 + i * 0.32, 0.23, 0.30, 0.62])
+        subax = ax.inset_axes([0.02 + i * 0.29, 0.25, 0.25, 0.56])
         if values is None:
             _empty(subax, "missing")
             continue
@@ -315,9 +340,14 @@ def _write_legend(path: Path, topk: pd.DataFrame, summary: pd.DataFrame) -> None
 
 
 def _write_source_tarball(path: Path, results_dir: Path) -> None:
+    results_dir = results_dir.resolve()
     with tarfile.open(path, "w:gz") as tar:
-        for tsv in sorted(results_dir.glob("**/*.tsv")):
+        allowed_dirs = {dataset_dir.resolve() for dataset_dir in _validated_dataset_dirs(results_dir)}
+        for tsv in sorted(results_dir.glob("*.tsv")):
             tar.add(tsv, arcname=tsv.relative_to(results_dir))
+        for dataset_dir in sorted(allowed_dirs):
+            for tsv in sorted(dataset_dir.glob("*.tsv")):
+                tar.add(tsv, arcname=tsv.relative_to(results_dir))
 
 
 if __name__ == "__main__":

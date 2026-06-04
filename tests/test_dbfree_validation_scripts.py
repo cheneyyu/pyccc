@@ -109,6 +109,23 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
         "--baseline",
         "role_only",
     )
+    topk_before = (dataset_dir / "spatial_validation_top_k_enrichment.tsv").read_text(encoding="utf-8")
+    _run(
+        "scripts/run_dbfree_spatial_validation.py",
+        "--manifest",
+        manifest,
+        "--results-dir",
+        results,
+        "--smoke-only",
+        "--distance-decay-only",
+        "--baseline",
+        "dbfree",
+        "--baseline",
+        "role_only",
+    )
+    assert (dataset_dir / "spatial_validation_top_k_enrichment.tsv").read_text(encoding="utf-8") == topk_before
+    distance_decay = pd.read_csv(dataset_dir / "spatial_validation_distance_decay.tsv", sep="\t")
+    assert "model_weighted_mean_spatial_ccc_score" in distance_decay.columns
     figure_prefix = tmp_path / "figures" / "dbfree_spatial_validation_main"
     _run("scripts/make_dbfree_spatial_validation_figure.py", "--results-dir", results, "--output-prefix", figure_prefix)
     acceptance = subprocess.run(

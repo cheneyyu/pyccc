@@ -48,6 +48,7 @@ def validate_spatial_lr_table(
     compute_distance_decay: bool = True,
     compute_section_reproducibility: bool = True,
     distance_matrix_max_cells: int | None = 15000,
+    distance_decay_max_cells: int | None = 5000,
 ) -> SpatialValidationReport:
     """Validate candidate LR scores against simple spatial null models."""
 
@@ -98,7 +99,15 @@ def validate_spatial_lr_table(
     role_kernel_enrichment = _role_kernel_enrichment(summary)
     curated_overlap_enrichment = _curated_overlap_enrichment(summary, curated_lr_table)
     distance_decay = (
-        _distance_decay(coords, groups, lr, expr_means)
+        _distance_decay(
+            coords,
+            groups,
+            lr,
+            expr_means,
+            max_cells=distance_decay_max_cells,
+            random_state=random_state,
+            distance_matrix=distance_matrix,
+        )
         if compute_distance_decay
         else _empty_distance_decay()
     )
@@ -133,6 +142,7 @@ def validate_spatial_lr_table(
         "compute_section_reproducibility": bool(compute_section_reproducibility),
         "distance_matrix_cached": distance_matrix is not None,
         "distance_matrix_max_cells": distance_matrix_max_cells,
+        "distance_decay_max_cells": distance_decay_max_cells,
     }
     return SpatialValidationReport(
         summary,
@@ -483,6 +493,15 @@ _MATCHED_NULL_COLUMNS = [
 ]
 
 
+_MATCHED_NULL_PASSTHROUGH_COLUMNS = [
+    "model_score",
+    "confidence",
+    "density_rank",
+    "ligand_role_score",
+    "receptor_role_score",
+]
+
+
 def _group_null_scores(scored: pd.DataFrame, *, score_col: str) -> pd.DataFrame:
     scored = scored.copy()
     if "original_ligand" in scored.columns and "original_receptor" in scored.columns:
@@ -503,22 +522,24 @@ def _matched_random_lr(lr: pd.DataFrame, gene_expression: pd.Series, rng: np.ran
     for row in lr.itertuples(index=False):
         ligand_match = matcher.sample(row, side="ligand", rng=rng)
         receptor_match = matcher.sample(row, side="receptor", rng=rng)
-        rows.append(
-            {
-                "ligand": ligand_match["gene"],
-                "receptor": receptor_match["gene"],
-                "original_ligand": str(row.ligand),
-                "original_receptor": str(row.receptor),
-                "matched_ligand": ligand_match["gene"],
-                "matched_receptor": receptor_match["gene"],
-                "ligand_match_expression_delta": ligand_match["expression_delta"],
-                "receptor_match_expression_delta": receptor_match["expression_delta"],
-                "ligand_match_role_delta": ligand_match["role_delta"],
-                "receptor_match_role_delta": receptor_match["role_delta"],
-                "ligand_match_degree_delta": ligand_match["degree_delta"],
-                "receptor_match_degree_delta": receptor_match["degree_delta"],
-            }
-        )
+        item = {
+            "ligand": ligand_match["gene"],
+            "receptor": receptor_match["gene"],
+            "original_ligand": str(row.ligand),
+            "original_receptor": str(row.receptor),
+            "matched_ligand": ligand_match["gene"],
+            "matched_receptor": receptor_match["gene"],
+            "ligand_match_expression_delta": ligand_match["expression_delta"],
+            "receptor_match_expression_delta": receptor_match["expression_delta"],
+            "ligand_match_role_delta": ligand_match["role_delta"],
+            "receptor_match_role_delta": receptor_match["role_delta"],
+            "ligand_match_degree_delta": ligand_match["degree_delta"],
+            "receptor_match_degree_delta": receptor_match["degree_delta"],
+        }
+        for col in _MATCHED_NULL_PASSTHROUGH_COLUMNS:
+            if hasattr(row, col):
+                item[col] = getattr(row, col)
+        rows.append(item)
     return pd.DataFrame(rows)
 
 
@@ -855,8 +876,25 @@ def _curated_overlap_enrichment(summary: pd.DataFrame, curated_lr_table: CellCha
     return pd.DataFrame(rows, columns=columns)
 
 
-def _distance_decay(coords: np.ndarray, groups: np.ndarray, lr: pd.DataFrame, expr_means: pd.DataFrame) -> pd.DataFrame:
-    dist = cdist(coords[:, :2], coords[:, :2])
+def _distance_decay(
+    coords: np.ndarray,
+    groups: np.ndarray,
+    lr: pd.DataFrame,
+    expr_means: pd.DataFrame,
+    *,
+    max_cells: int | None = 5000,
+    random_state: int | None = 0,
+    distance_matrix: np.ndarray | None = None,
+) -> pd.DataFrame:
+    keep = None
+    if max_cells is not None and len(coords) > int(max_cells):
+        rng = np.random.default_rng(random_state)
+        keep = np.sort(rng.choice(len(coords), size=int(max_cells), replace=False))
+        coords = coords[keep]
+        groups = groups[keep]
+    dist = distance_matrix[np.ix_(keep, keep)] if keep is not None and distance_matrix is not None else distance_matrix
+    if dist is None:
+        dist = cdist(coords[:, :2], coords[:, :2])
     bins = np.quantile(dist[np.isfinite(dist)], np.linspace(0, 1, 6))
     bins = np.unique(bins)
     rows = []

@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Sequence
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 import scanpy as sc
 from scipy import sparse
+from scipy.spatial.distance import cdist
 
 import pyccc as pc
 from dbfree_validation_utils import (
@@ -33,6 +35,7 @@ def main() -> None:
     parser.add_argument("--smoke-only", action="store_true")
     parser.add_argument("--n-permutations", type=int, default=None)
     parser.add_argument("--baseline", action="append", choices=BASELINES, default=[])
+    parser.add_argument("--distance-decay-only", action="store_true", help="Only regenerate spatial_validation_distance_decay.tsv without overwriting null/enrichment tables.")
     args = parser.parse_args()
 
     manifest = load_manifest(args.manifest)
@@ -40,6 +43,8 @@ def main() -> None:
     sections = selected_sections(manifest, section_names=args.section, smoke_only=args.smoke_only)
     spatial_cfg = dict(manifest.get("spatial_validation", {}))
     n_permutations = int(args.n_permutations if args.n_permutations is not None else spatial_cfg.get("development_permutations", 100))
+    if args.distance_decay_only:
+        n_permutations = 0
     baselines = tuple(args.baseline or BASELINES)
     top_k_values = tuple(int(k) for k in spatial_cfg.get("top_k", (100, 500, 1000, 5000)))
     compute_distance_decay = bool(spatial_cfg.get("compute_distance_decay", True))
@@ -48,6 +53,9 @@ def main() -> None:
     write_null_distribution = bool(spatial_cfg.get("write_null_distribution", True))
     distance_matrix_max_cells = spatial_cfg.get("distance_matrix_max_cells", 15000)
     distance_matrix_max_cells = None if distance_matrix_max_cells is None else int(distance_matrix_max_cells)
+    distance_decay_max_cells = spatial_cfg.get("distance_decay_max_cells", 5000)
+    distance_decay_max_cells = None if distance_decay_max_cells is None else int(distance_decay_max_cells)
+    dbfree_score_cfg = dict(spatial_cfg.get("dbfree_score", {}))
     prepared = _prepared_paths(results_dir, sections)
     predicted_lr = _load_or_predict_lr(manifest, results_dir, args.predicted_lr, prepared)
     predicted_lr = _limit_lr_for_validation(predicted_lr, max(top_k_values) if top_k_values else 5000)
@@ -66,7 +74,21 @@ def main() -> None:
         section_id = str(section["name"])
         adata = sc.read_h5ad(prepared[section_id])
         for baseline in baselines:
-            lr_table = _baseline_lr(predicted_lr, baseline=baseline, adata=adata, gene_id_key="gene_id")
+            print(f"Running {manifest['name']} {section_id} {baseline}", flush=True)
+            lr_table = _baseline_lr(predicted_lr, baseline=baseline, adata=adata, gene_id_key="gene_id", dbfree_score_cfg=dbfree_score_cfg)
+            context = _context(manifest, section, adata, baseline=baseline, n_lr_pairs=len(lr_table), n_permutations=n_permutations, lr_table=lr_table)
+            if args.distance_decay_only:
+                decay = _fast_distance_decay(
+                    adata,
+                    lr_table,
+                    groupby="pyccc_group",
+                    spatial_key="spatial",
+                    gene_id_key="gene_id",
+                    max_cells=distance_decay_max_cells,
+                    random_state=int(spatial_cfg.get("random_seed", 0)),
+                )
+                report_tables["distance_decay"].append(_with_context(decay, context))
+                continue
             report = pc.validate_spatial_lr_table(
                 adata,
                 lr_table=lr_table,
@@ -75,15 +97,15 @@ def main() -> None:
                 gene_symbols_key="gene_id",
                 section_key="section_id",
                 distance_kernels=tuple(spatial_cfg.get("distance_kernels", ("contact", "exp"))),
-                null_models=tuple(spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"))),
+                null_models=() if args.distance_decay_only else tuple(spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"))),
                 n_permutations=n_permutations,
                 random_state=int(spatial_cfg.get("random_seed", 0)),
                 top_k=top_k_values,
-                compute_distance_decay=compute_distance_decay,
-                compute_section_reproducibility=compute_section_reproducibility,
+                compute_distance_decay=True if args.distance_decay_only else compute_distance_decay,
+                compute_section_reproducibility=False if args.distance_decay_only else compute_section_reproducibility,
                 distance_matrix_max_cells=distance_matrix_max_cells,
+                distance_decay_max_cells=distance_decay_max_cells,
             )
-            context = _context(manifest, section, adata, baseline=baseline, n_lr_pairs=len(lr_table), n_permutations=n_permutations)
             report_tables["summary"].append(_with_context(report.summary, context))
             celltype_pairs = report.celltype_pair_summary if write_celltype_pair_summary else report.celltype_pair_summary.head(0)
             null_distribution = report.null_distribution if write_null_distribution else report.null_distribution.head(0)
@@ -96,10 +118,13 @@ def main() -> None:
             report_tables["distance_decay"].append(_with_context(report.distance_decay, context))
             report_tables["section_reproducibility"].append(_with_context(report.section_reproducibility, context))
 
-    for key, frames in report_tables.items():
+    keys_to_write = ("distance_decay",) if args.distance_decay_only else tuple(report_tables)
+    for key in keys_to_write:
+        frames = report_tables[key]
         frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         write_tsv(frame, results_dir / f"spatial_validation_{key}.tsv")
-    _write_global_baseline_tables(results_dir.parent)
+    if not args.distance_decay_only:
+        _write_global_baseline_tables(results_dir.parent)
 
 
 def _prepared_paths(results_dir: Path, sections: list[dict[str, object]]) -> dict[str, str]:
@@ -270,9 +295,17 @@ def _validation_split_summary(card: dict[str, object]) -> str:
     return ";".join(parts)
 
 
-def _baseline_lr(lr: pd.DataFrame, *, baseline: str, adata, gene_id_key: str) -> pd.DataFrame:
+def _baseline_lr(
+    lr: pd.DataFrame,
+    *,
+    baseline: str,
+    adata,
+    gene_id_key: str,
+    dbfree_score_cfg: dict[str, object] | None = None,
+) -> pd.DataFrame:
     out = lr.copy()
     if baseline == "dbfree":
+        out = _apply_dbfree_validation_score(out, adata=adata, gene_id_key=gene_id_key, score_cfg=dbfree_score_cfg or {})
         out["validation_strategy"] = "dbfree"
         return out
     if baseline == "role_only":
@@ -292,7 +325,135 @@ def _baseline_lr(lr: pd.DataFrame, *, baseline: str, adata, gene_id_key: str) ->
         raise ValueError(f"Unknown baseline: {baseline}")
     out["confidence"] = out["model_score"]
     out["validation_strategy"] = baseline
+    out["validation_score_method"] = baseline
     return out.sort_values("model_score", ascending=False).reset_index(drop=True)
+
+
+def _apply_dbfree_validation_score(
+    lr: pd.DataFrame,
+    *,
+    adata,
+    gene_id_key: str,
+    score_cfg: dict[str, object],
+) -> pd.DataFrame:
+    out = lr.copy()
+    method = str(score_cfg.get("method", "model"))
+    out["base_model_score"] = pd.to_numeric(out.get("model_score", 1.0), errors="coerce").fillna(0.0)
+    out["validation_score_method"] = method
+    if method in {"", "model", "model_score"}:
+        return out.sort_values("model_score", ascending=False).reset_index(drop=True)
+    if method != "model_x_expression_potential":
+        raise ValueError(f"Unsupported dbfree_score method: {method}")
+    stat = str(score_cfg.get("potential_stat", "mean"))
+    power = float(score_cfg.get("power", 0.5))
+    potential = _nonspatial_expression_potential(out, adata=adata, gene_id_key=gene_id_key, stat=stat)
+    ranks = pd.Series(potential).rank(method="average", pct=True).fillna(0.0).to_numpy(dtype=float)
+    score = out["base_model_score"].to_numpy(dtype=float) * np.power(ranks, power)
+    out["expression_potential_score"] = potential
+    out["expression_potential_rank"] = ranks
+    out["expression_potential_stat"] = stat
+    out["expression_potential_power"] = power
+    out["model_score"] = score
+    out["confidence"] = score
+    return out.sort_values("model_score", ascending=False).reset_index(drop=True)
+
+
+def _nonspatial_expression_potential(lr: pd.DataFrame, *, adata, gene_id_key: str, stat: str) -> np.ndarray:
+    genes = sorted(set(lr["ligand"].astype(str)).union(set(lr["receptor"].astype(str))))
+    means = _group_expression_means_for_genes(adata, genes, gene_id_key=gene_id_key)
+    ligands = lr["ligand"].astype(str).to_numpy()
+    receptors = lr["receptor"].astype(str).to_numpy()
+    ligand_expr = means.reindex(columns=ligands, fill_value=0.0).to_numpy(dtype=float)
+    receptor_expr = means.reindex(columns=receptors, fill_value=0.0).to_numpy(dtype=float)
+    values = (ligand_expr[:, None, :] * receptor_expr[None, :, :]).reshape(-1, len(lr))
+    if stat == "mean":
+        return values.mean(axis=0)
+    if stat == "max":
+        return values.max(axis=0)
+    if stat == "q90":
+        return np.quantile(values, 0.9, axis=0)
+    raise ValueError(f"Unsupported expression potential statistic: {stat}")
+
+
+def _fast_distance_decay(
+    adata,
+    lr: pd.DataFrame,
+    *,
+    groupby: str,
+    spatial_key: str,
+    gene_id_key: str,
+    max_cells: int | None,
+    random_state: int,
+) -> pd.DataFrame:
+    if spatial_key not in adata.obsm:
+        raise KeyError(f"`{spatial_key}` is not present in adata.obsm.")
+    if groupby not in adata.obs:
+        raise KeyError(f"`{groupby}` is not present in adata.obs.")
+    columns = ["ligand", "receptor", "distance_min", "distance_max", "mean_distance", "mean_spatial_ccc_score", "model_weighted_mean_spatial_ccc_score"]
+    if lr.empty:
+        return pd.DataFrame(columns=columns)
+
+    coords = np.asarray(adata.obsm[spatial_key], dtype=float)[:, :2]
+    groups = adata.obs[groupby].astype(str).to_numpy()
+    if max_cells is not None and len(coords) > int(max_cells):
+        rng = np.random.default_rng(random_state)
+        keep = np.sort(rng.choice(len(coords), size=int(max_cells), replace=False))
+        coords = coords[keep]
+        groups = groups[keep]
+    dist = cdist(coords, coords)
+    bins = np.unique(np.quantile(dist[np.isfinite(dist)], np.linspace(0, 1, 6)))
+    if len(bins) < 2:
+        return pd.DataFrame(columns=columns)
+
+    group_levels = np.asarray(sorted(set(groups)), dtype=object)
+    codes = pd.Categorical(groups, categories=group_levels).codes
+    eye = np.eye(len(group_levels), dtype=float)
+    onehot = eye[codes]
+    counts = np.bincount(codes, minlength=len(group_levels)).astype(float)
+    denominators = np.maximum(np.outer(counts, counts), 1.0)
+
+    genes = sorted(set(lr["ligand"].astype(str)).union(set(lr["receptor"].astype(str))))
+    expr = _group_expression_means_for_genes(adata, genes, gene_id_key=gene_id_key).reindex(index=group_levels, fill_value=0.0)
+    ligands = lr["ligand"].astype(str).to_numpy()
+    receptors = lr["receptor"].astype(str).to_numpy()
+    model_scores = pd.to_numeric(lr.get("model_score", pd.Series([1.0] * len(lr))), errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    ligand_expr = expr.reindex(columns=ligands, fill_value=0.0).to_numpy(dtype=float)
+    receptor_expr = expr.reindex(columns=receptors, fill_value=0.0).to_numpy(dtype=float)
+
+    rows = []
+    for left, right in zip(bins[:-1], bins[1:], strict=True):
+        in_bin = ((dist >= left) & (dist <= right)).astype(float)
+        weights = (onehot.T @ (in_bin @ onehot)) / denominators
+        scores = np.einsum("ij,ik,jk->k", weights, ligand_expr, receptor_expr, optimize=True) / max(weights.size, 1)
+        rows.append(
+            pd.DataFrame(
+                {
+                    "ligand": ligands,
+                    "receptor": receptors,
+                    "distance_min": float(left),
+                    "distance_max": float(right),
+                    "mean_distance": float((left + right) / 2),
+                    "mean_spatial_ccc_score": scores.astype(float),
+                    "model_weighted_mean_spatial_ccc_score": scores.astype(float) * model_scores,
+                }
+            )
+        )
+    return pd.concat(rows, ignore_index=True)
+
+
+def _group_expression_means_for_genes(adata, genes: Sequence[str], *, gene_id_key: str) -> pd.DataFrame:
+    gene_names = adata.var[gene_id_key].astype(str) if gene_id_key in adata.var else pd.Index(adata.var_names.astype(str))
+    lookup = {gene: i for i, gene in enumerate(gene_names)}
+    cols = [lookup[gene] for gene in genes if gene in lookup]
+    selected = [gene for gene in genes if gene in lookup]
+    groups = adata.obs["pyccc_group"].astype(str).to_numpy()
+    x = adata.X[:, cols]
+    rows = []
+    for group in sorted(set(groups)):
+        sub = x[groups == group]
+        values = np.asarray(sub.mean(axis=0)).ravel() if sparse.issparse(sub) else np.asarray(sub).mean(axis=0)
+        rows.append(pd.Series(values, index=selected, name=group))
+    return pd.DataFrame(rows).fillna(0.0)
 
 
 def _global_gene_expression(adata, *, gene_id_key: str) -> pd.Series:
@@ -309,6 +470,7 @@ def _context(
     baseline: str,
     n_lr_pairs: int,
     n_permutations: int,
+    lr_table: pd.DataFrame,
 ) -> dict[str, object]:
     return {
         "dataset": manifest["name"],
@@ -321,7 +483,17 @@ def _context(
         "n_lr_pairs_in_table": int(n_lr_pairs),
         "random_seed": int(dict(manifest.get("spatial_validation", {})).get("random_seed", 0)),
         "n_permutations": int(n_permutations),
+        "validation_score_method": _first_table_value(lr_table, "validation_score_method", baseline),
+        "expression_potential_stat": _first_table_value(lr_table, "expression_potential_stat", ""),
+        "expression_potential_power": _first_table_value(lr_table, "expression_potential_power", ""),
     }
+
+
+def _first_table_value(frame: pd.DataFrame, col: str, default: object) -> object:
+    if col not in frame or frame.empty:
+        return default
+    value = frame[col].iloc[0]
+    return "" if pd.isna(value) else value
 
 
 def _with_context(frame: pd.DataFrame, context: dict[str, object]) -> pd.DataFrame:

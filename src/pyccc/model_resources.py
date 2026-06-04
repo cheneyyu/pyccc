@@ -6,6 +6,8 @@ from pathlib import Path
 PACKAGE_MODEL_ROOT = Path(__file__).resolve().parent / "models"
 DEFAULT_DBFREE_ROLE_MODEL = PACKAGE_MODEL_ROOT / "universal_esmc300m_lgbm_role_classifiers_v0"
 DEFAULT_DBFREE_PAIR_MODEL = PACKAGE_MODEL_ROOT / "universal_esmc300m_lgbm_pair_ranker_v0"
+ANIMAL_DBFREE_ROLE_MODEL = PACKAGE_MODEL_ROOT / "animal_esmc300m_lgbm_role_classifiers_v0"
+ANIMAL_DBFREE_PAIR_MODEL = PACKAGE_MODEL_ROOT / "animal_esmc300m_lgbm_pair_ranker_v0"
 
 
 def resolve_dbfree_model_path(model: str | Path, *, expected_file: str | None = None) -> Path:
@@ -17,6 +19,8 @@ def resolve_dbfree_model_path(model: str | Path, *, expected_file: str | None = 
     bundled = {
         DEFAULT_DBFREE_ROLE_MODEL.name: DEFAULT_DBFREE_ROLE_MODEL,
         DEFAULT_DBFREE_PAIR_MODEL.name: DEFAULT_DBFREE_PAIR_MODEL,
+        ANIMAL_DBFREE_ROLE_MODEL.name: ANIMAL_DBFREE_ROLE_MODEL,
+        ANIMAL_DBFREE_PAIR_MODEL.name: ANIMAL_DBFREE_PAIR_MODEL,
     }.get(path.name)
     if bundled is not None and _model_path_exists(bundled, expected_file=expected_file):
         return bundled
