@@ -498,10 +498,11 @@ def _group_null_scores(scored: pd.DataFrame, *, score_col: str) -> pd.DataFrame:
 
 def _matched_random_lr(lr: pd.DataFrame, gene_expression: pd.Series, rng: np.random.Generator) -> pd.DataFrame:
     match_table = _gene_match_table(lr, gene_expression)
+    matcher = _GeneMatchSampler(match_table)
     rows = []
     for row in lr.itertuples(index=False):
-        ligand_match = _sample_matched_gene(match_table, row, side="ligand", rng=rng)
-        receptor_match = _sample_matched_gene(match_table, row, side="receptor", rng=rng)
+        ligand_match = matcher.sample(row, side="ligand", rng=rng)
+        receptor_match = matcher.sample(row, side="receptor", rng=rng)
         rows.append(
             {
                 "ligand": ligand_match["gene"],
@@ -547,49 +548,76 @@ def _role_lookup(lr: pd.DataFrame, *, gene_col: str, score_col: str, default: fl
     return values.groupby("gene")["score"].mean()
 
 
-def _sample_matched_gene(match_table: pd.DataFrame, row, *, side: str, rng: np.random.Generator) -> dict[str, object]:
-    if match_table.empty:
+@dataclass
+class _GeneMatchSampler:
+    match_table: pd.DataFrame
+
+    def __post_init__(self) -> None:
+        table = self.match_table.reset_index(drop=True)
+        self.genes = table["gene"].astype(str).to_numpy() if "gene" in table else np.asarray([], dtype=str)
+        self.gene_to_idx = {gene: i for i, gene in enumerate(self.genes)}
+        self.expression_quantile = _numeric_array(table, "expression_quantile")
+        self.ligand_role_score = _numeric_array(table, "ligand_role_score", default=0.5)
+        self.receptor_role_score = _numeric_array(table, "receptor_role_score", default=0.5)
+        self.ligand_degree = _numeric_array(table, "ligand_degree")
+        self.receptor_degree = _numeric_array(table, "receptor_degree")
+        self.median_expression_quantile = float(np.nanmedian(self.expression_quantile)) if len(self.expression_quantile) else np.nan
+
+    def sample(self, row, *, side: str, rng: np.random.Generator) -> dict[str, object]:
+        if len(self.genes) == 0:
+            gene = str(getattr(row, side))
+            return {"gene": gene, "expression_delta": np.nan, "role_delta": np.nan, "degree_delta": np.nan}
         gene = str(getattr(row, side))
-        return {"gene": gene, "expression_delta": np.nan, "role_delta": np.nan, "degree_delta": np.nan}
-    gene = str(getattr(row, side))
-    role_col = f"{side}_role_score"
-    degree_col = f"{side}_degree"
-    target = _target_match_values(match_table, row, side=side)
-    candidates = match_table.copy()
-    if len(candidates) > 1:
-        candidates = candidates[candidates["gene"].astype(str) != gene].copy()
-    candidates["expression_delta"] = (candidates["expression_quantile"].astype(float) - target["expression_quantile"]).abs()
-    candidates["role_delta"] = (candidates[role_col].astype(float) - target["role_score"]).abs()
-    candidates["degree_delta"] = (np.log1p(candidates[degree_col].astype(float)) - np.log1p(target["degree"])).abs()
-    candidates["_match_distance"] = candidates["expression_delta"] + candidates["role_delta"] + candidates["degree_delta"]
-    pool = candidates.nsmallest(min(10, len(candidates)), "_match_distance")
-    choice = pool.iloc[int(rng.integers(0, len(pool)))]
-    return {
-        "gene": str(choice["gene"]),
-        "expression_delta": float(choice["expression_delta"]),
-        "role_delta": float(choice["role_delta"]),
-        "degree_delta": float(choice["degree_delta"]),
-    }
-
-
-def _target_match_values(match_table: pd.DataFrame, row, *, side: str) -> dict[str, float]:
-    gene = str(getattr(row, side))
-    role_attr = f"{side}_role_score"
-    role_col = f"{side}_role_score"
-    degree_col = f"{side}_degree"
-    sub = match_table[match_table["gene"].astype(str) == gene]
-    if sub.empty:
+        target = self._target_values(row, side=side)
+        role_scores = self.ligand_role_score if side == "ligand" else self.receptor_role_score
+        degrees = self.ligand_degree if side == "ligand" else self.receptor_degree
+        expression_delta = np.abs(self.expression_quantile - target["expression_quantile"])
+        role_delta = np.abs(role_scores - target["role_score"])
+        degree_delta = np.abs(np.log1p(degrees) - np.log1p(target["degree"]))
+        distance = expression_delta + role_delta + degree_delta
+        if len(distance) > 1 and gene in self.gene_to_idx:
+            distance = distance.copy()
+            distance[self.gene_to_idx[gene]] = np.inf
+        finite = np.isfinite(distance)
+        if not finite.any():
+            idx = self.gene_to_idx.get(gene, 0)
+        else:
+            finite_idx = np.flatnonzero(finite)
+            pool_size = min(10, len(finite_idx))
+            if pool_size < len(finite_idx):
+                candidate_idx = finite_idx[np.argpartition(distance[finite_idx], pool_size - 1)[:pool_size]]
+            else:
+                candidate_idx = finite_idx
+            idx = int(candidate_idx[int(rng.integers(0, len(candidate_idx)))])
         return {
-            "expression_quantile": float(match_table["expression_quantile"].median()),
-            "role_score": float(getattr(row, role_attr, 0.5)),
-            "degree": 0.0,
+            "gene": str(self.genes[idx]),
+            "expression_delta": float(expression_delta[idx]),
+            "role_delta": float(role_delta[idx]),
+            "degree_delta": float(degree_delta[idx]),
         }
-    item = sub.iloc[0]
-    return {
-        "expression_quantile": float(item["expression_quantile"]),
-        "role_score": float(getattr(row, role_attr, item[role_col])),
-        "degree": float(item[degree_col]),
-    }
+
+    def _target_values(self, row, *, side: str) -> dict[str, float]:
+        gene = str(getattr(row, side))
+        role_scores = self.ligand_role_score if side == "ligand" else self.receptor_role_score
+        degrees = self.ligand_degree if side == "ligand" else self.receptor_degree
+        idx = self.gene_to_idx.get(gene)
+        if idx is None:
+            return {
+                "expression_quantile": self.median_expression_quantile,
+                "role_score": float(getattr(row, f"{side}_role_score", 0.5)),
+                "degree": 0.0,
+            }
+        return {
+            "expression_quantile": float(self.expression_quantile[idx]),
+            "role_score": float(getattr(row, f"{side}_role_score", role_scores[idx])),
+            "degree": float(degrees[idx]),
+        }
+
+
+def _numeric_array(table: pd.DataFrame, col: str, *, default: float = 0.0) -> np.ndarray:
+    if col not in table:
+        return np.full(len(table), float(default), dtype=float)
+    return pd.to_numeric(table[col], errors="coerce").fillna(default).to_numpy(dtype=float)
 
 
 def _attach_null_stats(summary: pd.DataFrame, null: pd.DataFrame) -> pd.DataFrame:
