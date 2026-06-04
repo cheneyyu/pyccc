@@ -36,4 +36,4 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = True
 myst_enable_extensions = ["colon_fence"]
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "paper/**", "Thumbs.db", ".DS_Store"]

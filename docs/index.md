@@ -33,5 +33,4 @@ predictor_model_card
 :caption: Reference
 
 api
-paper/README
 ```

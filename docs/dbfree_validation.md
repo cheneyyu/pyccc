@@ -2,8 +2,8 @@
 
 This workflow validates DB-free target-species CCC on real special-species
 spatial transcriptomics. It does not retrain the DB-free predictor. It produces
-source tables and a manuscript-style figure from ARTISTA axolotl and SOTA
-soybean spatial sections.
+local source tables and a documentation summary figure from ARTISTA axolotl and
+SOTA soybean spatial sections.
 
 The conservative claim is:
 
@@ -18,7 +18,7 @@ binding events.
 
 ## Current Real-Data Snapshot
 
-The current manuscript figure was generated from ARTISTA axolotl
+The current documentation figure was generated from ARTISTA axolotl
 `Control_Juv`, `5DPI_1`, and `30DPI` sections plus SOTA soybean `SAM` and
 `Leaf` sections. Final top-K enrichment uses `exp` kernel,
 `model_weighted_spatial_ccc_score`, `matched_random_lr` null rows, random seed
@@ -26,10 +26,9 @@ The current manuscript figure was generated from ARTISTA axolotl
 
 ![DB-free spatial validation main figure](figures/dbfree_spatial_validation_main.png)
 
-Compact primary source rows are committed in
-`docs/paper/results/dbfree_spatial_validation_primary.tsv`. The full generated
-tables are intentionally kept under ignored `results/dbfree_validation/`
-because they are large and reproducible from the manifests and scripts.
+Generated source tables are intentionally kept under ignored
+`results/dbfree_validation/` because they are reproducible from the manifests
+and scripts and are too draft-like for the package repository.
 
 ARTISTA passes the main spatial gate in all three required sections:
 

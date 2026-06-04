@@ -18,6 +18,7 @@ docs/_build/
 data/
 results/
 figures/
+goal.md
 cellchat_plot_comparison/
 cellchat_reference_comparison/
 *.png
@@ -29,5 +30,6 @@ cellchat_reference_comparison/
 !docs/**/*.svg
 !docs/**/*.pdf
 !docs/**/*.html
-!docs/paper/results/
-!docs/paper/results/*.tsv
+docs/paper/
+scripts/make_publication_figure.py
+docs/figures/publication_main_figure.png

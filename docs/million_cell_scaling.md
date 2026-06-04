@@ -25,7 +25,7 @@ The current large benchmark uses the CELLxGENE Human Immune Health Atlas:
 
 The benchmark runs the same within-sample CCC, two-condition differential CCC,
 and matched visualization workflow through the three strategies shown in the
-README runtime figure. The committed detailed result table is
+README runtime figure. The detailed local result table is
 `data/runtime_benchmark/human_immune_health_atlas_real1m_raw/adaptive_runtime.tsv`.
 
 ## Reproduce

@@ -1,7 +1,7 @@
 # Reproducibility
 
-This document records the artifacts needed to reproduce the figures and claims
-used in the repository README and publication-style summaries.
+This document records the commands needed to reproduce the package benchmarks
+and example figures used in the repository README and documentation.
 
 ## Environment
 
@@ -30,10 +30,9 @@ Expected local outputs:
 - `cellchat_reference_comparison/pyccc_vs_cellchat_r_metrics.tsv`
 - `cellchat_reference_comparison/pyccc_vs_cellchat_r_a4.pdf`
 
-The current benchmark snapshot used by the publication figure reports Pearson,
-Spearman, and top-20 overlap of `1.0` for LR-source-target probabilities,
-global network weights, pathway information flow, LR information flow, and MIF
-LR contribution.
+The current parity snapshot reports Pearson, Spearman, and top-20 overlap of
+`1.0` for LR-source-target probabilities, global network weights, pathway
+information flow, LR information flow, and MIF LR contribution.
 
 ## Real 1M-cell Benchmark
 
@@ -75,22 +74,3 @@ Expected local output:
 
 The top five cell types shared between conditions cover 1,100,447 real cells,
 so the 1,000,000-cell benchmark is sampled without replacement.
-
-## Publication Figure
-
-The manuscript-style figure is generated from compact, committed summary tables
-under `docs/paper/results/`:
-
-```bash
-uv run python scripts/make_publication_figure.py
-```
-
-Expected outputs:
-
-- `docs/paper/main_figure/pyccc_main_figure.pdf`
-- `docs/paper/main_figure/pyccc_main_figure_legend.md`
-- `docs/paper/main_figure/qa_multipage_contact_sheet.png`
-- `docs/figures/publication_main_figure.png`
-
-The script also exports each panel as PDF, SVG, and PNG under
-`docs/paper/main_figure/subfigures/`.
