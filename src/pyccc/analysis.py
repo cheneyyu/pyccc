@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Iterable
+from typing import Iterable, Sequence
 import warnings
 
 import numpy as np
@@ -1030,6 +1030,14 @@ def _group_expression_from_labels(
                 means.loc[group] = np.asarray(sub.mean(axis=0)).ravel()
                 pcts.loc[group] = pct
                 continue
+            if aggregate == "tri_mean":
+                means.loc[group] = _sparse_tri_mean(sub)
+                pcts.loc[group] = pct
+                continue
+            if aggregate == "median":
+                means.loc[group] = _sparse_quantiles(sub, [50.0])[0]
+                pcts.loc[group] = pct
+                continue
             if aggregate == "clipped_mean":
                 means.loc[group] = _clipped_sparse_mean(sub, caps=clip_caps)
                 pcts.loc[group] = pct
@@ -1068,6 +1076,47 @@ def _clipped_sparse_mean(x, *, caps: np.ndarray) -> np.ndarray:
 
 def _gated_sparse_mean(x, *, caps: np.ndarray, pct: np.ndarray) -> np.ndarray:
     return _gated_mean_from_all_mean_and_pct(_clipped_sparse_mean(x, caps=caps), pct)
+
+
+def _sparse_tri_mean(x) -> np.ndarray:
+    q1, q2, q3 = _sparse_quantiles(x, [25.0, 50.0, 75.0])
+    return np.asarray((q1 + 2 * q2 + q3) / 4).ravel()
+
+
+def _sparse_quantiles(x, quantiles: Sequence[float]) -> np.ndarray:
+    if x.shape[0] == 0:
+        return np.zeros((len(quantiles), x.shape[1]), dtype=float)
+    x_csc = x.tocsc().astype(float, copy=False)
+    x_csc.eliminate_zeros()
+    if x_csc.data.size and not np.isfinite(x_csc.data).all():
+        return np.percentile(x.toarray(), quantiles, axis=0)
+    out = np.zeros((len(quantiles), x_csc.shape[1]), dtype=float)
+    n_rows = int(x_csc.shape[0])
+    for col in range(x_csc.shape[1]):
+        start, end = x_csc.indptr[col], x_csc.indptr[col + 1]
+        values = np.sort(x_csc.data[start:end])
+        zero_count = n_rows - len(values)
+        negative_count = int(np.searchsorted(values, 0.0, side="left"))
+        for row, quantile in enumerate(quantiles):
+            position = (n_rows - 1) * float(quantile) / 100.0
+            lower = int(np.floor(position))
+            upper = int(np.ceil(position))
+            lower_value = _sparse_sorted_value(values, lower, zero_count=zero_count, negative_count=negative_count)
+            if lower == upper:
+                out[row, col] = lower_value
+            else:
+                upper_value = _sparse_sorted_value(values, upper, zero_count=zero_count, negative_count=negative_count)
+                out[row, col] = lower_value + (position - lower) * (upper_value - lower_value)
+    return out
+
+
+def _sparse_sorted_value(values: np.ndarray, index: int, *, zero_count: int, negative_count: int) -> float:
+    if index < negative_count:
+        return float(values[index])
+    zero_end = negative_count + zero_count
+    if index < zero_end:
+        return 0.0
+    return float(values[index - zero_count])
 
 
 def _gated_mean_from_all_mean_and_pct(all_mean: np.ndarray, pct: np.ndarray) -> np.ndarray:

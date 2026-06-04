@@ -447,6 +447,35 @@ def test_clipped_mean_matches_sparse():
     pd.testing.assert_frame_equal(dense.interactions[cols], sparse_res.interactions[cols])
 
 
+def test_tri_mean_matches_sparse():
+    adata = make_adata()
+    lr = pc.toy_lr_table()
+    dense = pc.compute_communication(adata, "cell_type", lr, min_pct=0.0, aggregate="tri_mean")
+
+    sparse_adata = adata.copy()
+    sparse_adata.X = sparse.csr_matrix(sparse_adata.X)
+    sparse_res = pc.compute_communication(sparse_adata, "cell_type", lr, min_pct=0.0, aggregate="tri_mean")
+
+    cols = ["source", "target", "ligand", "receptor", "prob"]
+    pd.testing.assert_frame_equal(dense.interactions[cols], sparse_res.interactions[cols])
+
+
+def test_sparse_quantiles_match_dense_with_implicit_zeros():
+    arr = np.array(
+        [
+            [0.0, -2.0, 0.0],
+            [0.0, 0.0, 4.0],
+            [3.0, 0.0, 0.0],
+            [9.0, 5.0, 8.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+    quantiles = [25.0, 50.0, 75.0]
+    expected = np.percentile(arr, quantiles, axis=0)
+    observed = analysis._sparse_quantiles(sparse.csr_matrix(arr), quantiles)
+    np.testing.assert_allclose(observed, expected)
+
+
 def test_gated_mean_matches_sparse():
     adata = make_adata()
     lr = pc.toy_lr_table()

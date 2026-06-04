@@ -213,6 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-cells", type=int, default=1000000)
     parser.add_argument("--min-cells", type=int, default=25000)
     parser.add_argument("--n-groups", type=int, default=12, help="Number of shared groups to keep; use 0 to keep all shared groups.")
+    parser.add_argument("--n-jobs", type=int, default=1, help="Python worker count for pyccc permutation/downsampling paths.")
     parser.add_argument("--random-state", type=int, default=123)
     parser.add_argument("--allow-repeated-cells", action="store_true", help="Allow upsampling by repeating cells when target cells exceed the real filtered dataset size.")
     parser.add_argument("--skip-direct-cellchat", action="store_true")
@@ -252,7 +253,7 @@ def run_cellxgene_adaptive(args: argparse.Namespace, out_dir: Path) -> None:
         rows = run_three_way_for_adata(args, attempt_dir, adata, lr_db, lr_r, scale_label=f"cells_{adata.n_obs}")
         all_rows.append(rows)
         statuses = set(rows["status"].astype(str))
-        if statuses == {"ok"}:
+        if statuses <= {"ok", "skipped"} and "ok" in statuses:
             break
         attempt_cells //= 2
         del adata
@@ -354,7 +355,9 @@ def run_three_way_for_adata(
         ("direct_cellchat", run_direct_cellchat),
     ]:
         if strategy == "direct_cellchat" and args.skip_direct_cellchat:
-            rows.append(record_skip(strategy, scale_label, adata, "Skipped by --skip-direct-cellchat."))
+            row = record_skip(strategy, scale_label, adata, "Skipped by --skip-direct-cellchat.")
+            row.update(runtime_metadata(args))
+            rows.append(row)
             continue
         print(f"Running {strategy} on {adata.n_obs:,} cells", flush=True)
         try:
@@ -362,6 +365,7 @@ def run_three_way_for_adata(
         except Exception as exc:
             row = record_failure(strategy, scale_label, adata, exc)
             (out_dir / f"{strategy}_failure.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        row.update(runtime_metadata(args))
         rows.append(row)
         pd.DataFrame(rows).to_csv(out_dir / "runtime_partial.tsv", sep="\t", index=False)
         gc.collect()
@@ -393,7 +397,9 @@ def run_pyccc_python(args, out_dir: Path, adata, lr_db, lr_path, input_dir, scal
     plot_start = time.perf_counter()
     save_pyccc_plots(out_dir / "plots", res_a, diff)
     plot_seconds = time.perf_counter() - plot_start
-    return record_ok("pyccc_python", scale_label, adata, time.perf_counter() - start, compute_seconds, plot_seconds, export_seconds=0.0, r_seconds=0.0, n_interactions=len(diff.interactions))
+    row = record_ok("pyccc_python", scale_label, adata, time.perf_counter() - start, compute_seconds, plot_seconds, export_seconds=0.0, r_seconds=0.0, n_interactions=len(diff.interactions))
+    row.update(getattr(args, "_last_pyccc_pair_timing", {}))
+    return row
 
 
 def run_pyccc_cellchat_bridge(args, out_dir: Path, adata, lr_db, lr_path, input_dir, scale_label: str) -> dict[str, object]:
@@ -420,7 +426,9 @@ def run_pyccc_cellchat_bridge(args, out_dir: Path, adata, lr_db, lr_path, input_
     run_rscript([single_dir / "pyccc_to_cellchat.R", single_dir, out_dir / "sample_a_cellchat.rds", out_dir / "plots_single"], timeout=args.timeout_seconds)
     run_rscript([merged_dir / "pyccc_to_merged_cellchat.R", merged_dir, out_dir / "merged_cellchat.rds", out_dir / "plots_merged"], timeout=args.timeout_seconds)
     r_seconds = time.perf_counter() - r_start
-    return record_ok("pyccc_cellchat_bridge", scale_label, adata, time.perf_counter() - start, compute_seconds, plot_seconds=0.0, export_seconds=export_seconds, r_seconds=r_seconds, n_interactions=len(diff.interactions))
+    row = record_ok("pyccc_cellchat_bridge", scale_label, adata, time.perf_counter() - start, compute_seconds, plot_seconds=0.0, export_seconds=export_seconds, r_seconds=r_seconds, n_interactions=len(diff.interactions))
+    row.update(getattr(args, "_last_pyccc_pair_timing", {}))
+    return row
 
 
 def run_direct_cellchat(args, out_dir: Path, adata, lr_db, lr_path, input_dir, scale_label: str) -> dict[str, object]:
@@ -474,10 +482,22 @@ def compute_pyccc_pair(args, adata, lr_db: pc.CellChatDB):
         cofactor_hill=1.0,
         population_size=False,
         gene_symbols_key=args.gene_symbols_key,
+        n_jobs=args.n_jobs,
     )
+    start = time.perf_counter()
     res_a = pc.compute_communication(adata, condition=args.condition_a, **kwargs)
+    condition_a_seconds = time.perf_counter() - start
+    start = time.perf_counter()
     res_b = pc.compute_communication(adata, condition=args.condition_b, **kwargs)
+    condition_b_seconds = time.perf_counter() - start
+    start = time.perf_counter()
     diff = pc.compare_communication(res_a, res_b, label_a=args.condition_a, label_b=args.condition_b)
+    compare_seconds = time.perf_counter() - start
+    args._last_pyccc_pair_timing = {
+        "condition_a_seconds": condition_a_seconds,
+        "condition_b_seconds": condition_b_seconds,
+        "compare_seconds": compare_seconds,
+    }
     return res_a, res_b, diff
 
 
@@ -604,6 +624,32 @@ def record_skip(strategy, scale_label, adata, reason: str) -> dict[str, object]:
     row["status"] = "skipped"
     row["error"] = reason
     return row
+
+
+def runtime_metadata(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "cpu_count": os.cpu_count() or "",
+        "n_jobs": getattr(args, "n_jobs", ""),
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS", ""),
+        "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS", ""),
+        "mkl_num_threads": os.environ.get("MKL_NUM_THREADS", ""),
+        "numexpr_num_threads": os.environ.get("NUMEXPR_NUM_THREADS", ""),
+        "blas_threads": _blas_thread_summary(),
+    }
+
+
+def _blas_thread_summary() -> str:
+    try:
+        from threadpoolctl import threadpool_info
+    except Exception:
+        return ""
+    parts = []
+    for item in threadpool_info():
+        api = item.get("internal_api") or item.get("user_api") or "unknown"
+        threads = item.get("num_threads", "")
+        prefix = item.get("prefix", "")
+        parts.append(f"{api}:{threads}:{prefix}")
+    return ";".join(parts)
 
 
 def maxrss_mb() -> float:

@@ -46,6 +46,7 @@ differential, and matched visualization workflow faster through pyccc:
 Reproduce the benchmark:
 
 ```bash
+OPENBLAS_NUM_THREADS=64 OMP_NUM_THREADS=64 MKL_NUM_THREADS=64 NUMEXPR_NUM_THREADS=64 \
 uv run python examples/three_way_runtime_benchmark.py \
   --mode cellxgene \
   --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw \
@@ -59,6 +60,7 @@ uv run python examples/three_way_runtime_benchmark.py \
   --target-cells 1000000 \
   --min-cells 125000 \
   --n-groups 5 \
+  --n-jobs 1 \
   --timeout-seconds 600
 ```
 
