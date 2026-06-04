@@ -312,8 +312,6 @@ predicted_db = pc.predict_lr_dbfree(
     protein_fasta="target.longest_protein.fa",
     gene_id_key="gene_id",
     species_name="target_species",
-    role_model="models/universal_esmc300m_lgbm_role_classifiers_v0",
-    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
     density_prior="auto",
     embedding_model_name=pc.ESMC_300M_MODEL_NAME,
     min_score=0.50,
@@ -332,8 +330,11 @@ res = pc.compute_communication(
 
 The production DB-free stack is explicitly `ESMC-300M embedding -> LightGBM
 protein role classifiers -> LightGBM pair ranker -> clade-aware density prior`.
-Hash embeddings, heuristic role/ranker models, and scalar density priors are
-fixture paths for tests or dry runs only.
+The universal LightGBM role and pair models are bundled with the Python package,
+so `predict_lr_dbfree(...)` works after a normal `pyccc[predict]` install unless
+you pass custom `role_model` or `model` paths. Hash embeddings, heuristic
+role/ranker models, and scalar density priors are fixture paths for tests or dry
+runs only.
 
 See `docs/lr_resources.md`, `docs/lr_resource_training.md`,
 `docs/dbfree_ccc.md`, and `docs/spatial_validation.md` for the experimental

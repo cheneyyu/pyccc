@@ -76,7 +76,7 @@ emb = pc.embed_proteins_esmc(
 roles = pc.predict_protein_roles(
     proteins=proteins,
     embeddings=emb,
-    model="models/universal_esmc300m_lgbm_role_classifiers_v0",
+    model=pc.DEFAULT_DBFREE_ROLE_MODEL,
 )
 ```
 
@@ -104,7 +104,7 @@ candidates = pc.generate_lr_candidates_dbfree(
 scores = pc.score_lr_candidates(
     candidate_pairs=candidates,
     embeddings=emb,
-    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
+    model=pc.DEFAULT_DBFREE_PAIR_MODEL,
 )
 ```
 
@@ -202,8 +202,6 @@ predicted_db = pc.predict_lr_dbfree(
     gene_id_key="gene_id",
     species_name="target_species",
     species_hint="unknown",
-    role_model="models/universal_esmc300m_lgbm_role_classifiers_v0",
-    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
     density_prior="auto",
     embedding_model_name=pc.ESMC_300M_MODEL_NAME,
     min_score=0.50,
@@ -238,9 +236,11 @@ set is non-empty, the predicted LR table warning column records
 
 By default the wrapper assumes the production stack: ESMC-300M mean-pooled
 embeddings, trained LightGBM protein role classifiers, a trained LightGBM pair
-ranker, and a clade-aware density prior. Fixture-only hash embeddings,
-heuristic role/ranker models, or scalar density priors require
-`allow_fixture_models=True`; use that only for tests or dry runs.
+ranker, and a clade-aware density prior. The universal role and pair models are
+bundled in `pyccc.models` and exposed as `pc.DEFAULT_DBFREE_ROLE_MODEL` and
+`pc.DEFAULT_DBFREE_PAIR_MODEL`; pass explicit paths only when replacing them.
+Fixture-only hash embeddings, heuristic role/ranker models, or scalar density
+priors require `allow_fixture_models=True`; use that only for tests or dry runs.
 
 With `density_prior="auto"`, `predict_lr_dbfree(...)` first looks for
 `density_prior.tsv` in the LR ranker model directory and uses the row matching

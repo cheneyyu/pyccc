@@ -8,6 +8,8 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
+from .model_resources import resolve_dbfree_model_path
+
 
 ROLE_COLUMNS = ("ligand_like_score", "receptor_like_score", "secreted_like_score", "membrane_like_score", "ecm_like_score", "out_of_domain_score")
 
@@ -92,7 +94,7 @@ def predict_protein_roles(
 
     if embeddings is None:
         raise ValueError("`embeddings` is required for a trained role model.")
-    payload = model if isinstance(model, dict) else load(Path(model) / "role_model.joblib")
+    payload = model if isinstance(model, dict) else load(resolve_dbfree_model_path(model, expected_file="role_model.joblib") / "role_model.joblib")
     X = _embedding_matrix(embeddings, genes=proteins["gene_id"].astype(str))
     out = proteins[["gene_id", "protein_id"]].copy()
     for role in payload["roles"]:

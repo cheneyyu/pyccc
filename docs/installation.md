@@ -24,7 +24,9 @@ python -m pip install "pyccc[ggplot,interactive,omnipath,liana] @ git+https://gi
 
 Add experimental DB-free prediction dependencies only when you need the
 ESMC-300M embedding, LightGBM protein role classifiers, LightGBM pair ranker,
-and clade-aware density prior workflow:
+and clade-aware density prior workflow. The universal LightGBM role and pair
+models are bundled with the package; the `predict` extra installs the runtime
+dependencies needed to use them and to compute ESMC-300M embeddings:
 
 ```bash
 python -m pip install "pyccc[ggplot,interactive,omnipath,predict] @ git+https://github.com/cheneyyu/pyccc.git@main"

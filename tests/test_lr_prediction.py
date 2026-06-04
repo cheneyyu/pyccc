@@ -6,6 +6,7 @@ from joblib import load
 
 import pyccc as pc
 from pyccc.lr_prediction import _training_pairs
+from pyccc.model_resources import resolve_dbfree_model_path
 
 
 def _fixture_training():
@@ -47,6 +48,24 @@ def _fixture_training():
         }
     )
     return interactions, embeddings
+
+
+def test_bundled_dbfree_model_paths_and_legacy_fallback():
+    assert (pc.DEFAULT_DBFREE_ROLE_MODEL / "role_model.joblib").exists()
+    assert (pc.DEFAULT_DBFREE_PAIR_MODEL / "lr_link_model.joblib").exists()
+    assert (pc.DEFAULT_DBFREE_PAIR_MODEL / "density_prior.tsv").exists()
+
+    legacy_role = resolve_dbfree_model_path(
+        "missing-parent/universal_esmc300m_lgbm_role_classifiers_v0",
+        expected_file="role_model.joblib",
+    )
+    legacy_pair = resolve_dbfree_model_path(
+        "missing-parent/universal_esmc300m_lgbm_pair_ranker_v0",
+        expected_file="lr_link_model.joblib",
+    )
+
+    assert legacy_role == pc.DEFAULT_DBFREE_ROLE_MODEL
+    assert legacy_pair == pc.DEFAULT_DBFREE_PAIR_MODEL
 
 
 def test_generate_candidates_can_add_embedding_neighbors_under_budget():

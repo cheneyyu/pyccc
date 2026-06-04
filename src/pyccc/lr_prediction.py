@@ -11,14 +11,13 @@ from scipy import sparse
 
 from .density import build_predicted_lr_table, estimate_lr_density_prior
 from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
+from .model_resources import DEFAULT_DBFREE_PAIR_MODEL, DEFAULT_DBFREE_ROLE_MODEL, resolve_dbfree_model_path
 from .pair_features import make_lr_pair_features
 from .roles import predict_protein_roles
 from .sequence import load_cds_translations, load_protein_fasta, match_expression_genes
 
 
 DBFREE_STACK_NAME = "esmc300m_lgbm_role_classifiers_lgbm_pair_ranker_clade_density_v0"
-DEFAULT_DBFREE_ROLE_MODEL = "models/universal_esmc300m_lgbm_role_classifiers_v0"
-DEFAULT_DBFREE_PAIR_MODEL = "models/universal_esmc300m_lgbm_pair_ranker_v0"
 
 
 def generate_lr_candidates_dbfree(
@@ -369,7 +368,8 @@ def score_lr_candidates(
 
     from joblib import load
 
-    payload = load(Path(model) / "lr_link_model.joblib")
+    model_path = resolve_dbfree_model_path(model, expected_file="lr_link_model.joblib")
+    payload = load(model_path / "lr_link_model.joblib")
     rows = []
     for start in range(0, len(pairs), batch_size):
         chunk = pairs.iloc[start : start + batch_size].copy()
@@ -445,9 +445,15 @@ def predict_lr_dbfree(
         receptor_candidates=receptor_candidates,
         **candidate_kwargs,
     )
-    scores = score_lr_candidates(candidates, emb, model=model)
-    resolved_density_prior = _auto_density_prior(density_prior, model)
-    pair_metadata = _pair_model_metadata(model)
+    resolved_model = resolve_dbfree_model_path(model, expected_file="lr_link_model.joblib") if str(model) != "heuristic" else model
+    resolved_role_model = (
+        role_model
+        if role_model_bypassed or str(role_model) == "heuristic"
+        else resolve_dbfree_model_path(role_model, expected_file="role_model.joblib")
+    )
+    scores = score_lr_candidates(candidates, emb, model=resolved_model)
+    resolved_density_prior = _auto_density_prior(density_prior, resolved_model)
+    pair_metadata = _pair_model_metadata(resolved_model)
     resolved_embedding_backend = "hash" if embedding_backend == "hash" or str(embedding_model_name) in {"hash", "fake"} else "esmc"
     db = build_predicted_lr_table(
         scores,
@@ -474,9 +480,9 @@ def predict_lr_dbfree(
         "embedding_model_name": embedding_model_name,
         "embedding_model_revision": embedding_model_revision or "",
         "embedding_backend": resolved_embedding_backend,
-        "role_model": "explicit_candidates" if role_model_bypassed else str(role_model),
+        "role_model": "explicit_candidates" if role_model_bypassed else str(resolved_role_model),
         "role_model_bypassed": bool(role_model_bypassed),
-        "pair_model": str(model),
+        "pair_model": str(resolved_model),
         "pair_model_name": pair_metadata["model_name"],
         "density_prior": "auto_from_pair_model" if isinstance(density_prior, str) and density_prior == "auto" else "user_supplied",
         "density_groupby": "clade",
@@ -489,9 +495,9 @@ def predict_lr_dbfree(
         summary["embedding_model_name"] = embedding_model_name
         summary["embedding_model_revision"] = embedding_model_revision or ""
         summary["embedding_backend"] = db.metadata["dbfree_model_stack"]["embedding_backend"]
-        summary["role_model"] = "explicit_candidates" if role_model_bypassed else str(role_model)
+        summary["role_model"] = "explicit_candidates" if role_model_bypassed else str(resolved_role_model)
         summary["role_model_bypassed"] = bool(role_model_bypassed)
-        summary["pair_model"] = str(model)
+        summary["pair_model"] = str(resolved_model)
         summary["pair_model_name"] = pair_metadata["model_name"]
         summary["density_groupby"] = "clade"
         summary["allow_fixture_models"] = bool(allow_fixture_models)
@@ -571,7 +577,7 @@ def _auto_density_prior(density_prior: pd.DataFrame | float | str, model: str | 
         return density_prior
     if str(model) == "heuristic":
         return density_prior
-    path = Path(model)
+    path = resolve_dbfree_model_path(model, expected_file="density_prior.tsv")
     table_path = path / "density_prior.tsv"
     if table_path.exists():
         return pd.read_csv(table_path, sep="\t")
@@ -603,13 +609,13 @@ def _validate_dbfree_prediction_stack(
     elif str(role_model) == "heuristic":
         problems.append("production DB-free prediction requires trained LightGBM protein role classifiers")
     else:
-        role_path = Path(role_model)
+        role_path = resolve_dbfree_model_path(role_model, expected_file="role_model.joblib")
         if not (role_path / "role_model.joblib").exists():
             missing_paths.append(f"LightGBM protein role classifiers: {role_path / 'role_model.joblib'}")
     if str(model) == "heuristic":
         problems.append("production DB-free prediction requires a trained LightGBM pair ranker")
     else:
-        pair_path = Path(model)
+        pair_path = resolve_dbfree_model_path(model, expected_file="lr_link_model.joblib")
         if not (pair_path / "lr_link_model.joblib").exists():
             missing_paths.append(f"LightGBM pair ranker: {pair_path / 'lr_link_model.joblib'}")
         if isinstance(density_prior, str) and density_prior == "auto" and not (pair_path / "density_prior.tsv").exists():
@@ -639,7 +645,7 @@ def _pair_model_metadata(model: str | Path) -> dict[str, str]:
             "model_revision": "",
             "feature_encoder": "heuristic",
         }
-    path = Path(model)
+    path = resolve_dbfree_model_path(model, expected_file="model_card.json")
     card_path = path / "model_card.json"
     card = json.loads(card_path.read_text(encoding="utf-8")) if card_path.exists() else {}
     embedding_model = card.get("embedding_model", {}) if isinstance(card.get("embedding_model"), dict) else {}
