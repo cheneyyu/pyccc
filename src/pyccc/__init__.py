@@ -8,7 +8,7 @@ from .diff import DifferentialCCC, compare_communication, compare_samples, pairw
 from .embeddings import ESMC_300M_MODEL_NAME, embed_proteins_esmc
 from .expression import signaling_expression_frame, signaling_expression_values
 from .liana_bridge import from_liana_results, run_liana
-from .lr_prediction import DBFREE_STACK_NAME, DEFAULT_DBFREE_PAIR_MODEL, DEFAULT_DBFREE_ROLE_MODEL, evaluate_lr_model_quality_gates, generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
+from .lr_prediction import DBFREE_STACK_NAME, DEFAULT_DBFREE_PAIR_MODEL, DEFAULT_DBFREE_ROLE_MODEL, compute_dbfree_communication, evaluate_lr_model_quality_gates, generate_lr_candidates_dbfree, predict_lr_dbfree, score_lr_candidates, train_lr_link_predictor
 from .model_resources import ANIMAL_DBFREE_PAIR_MODEL, ANIMAL_DBFREE_ROLE_MODEL
 from .lr_resources import load_training_lr_resources, training_lr_to_cellchatdb
 from .patterns import CommunicationPatterns, communication_pattern_matrix, compute_communication_patterns, compute_pathway_clusters, compute_pathway_embedding, compute_pathway_similarity, select_communication_pattern_number
@@ -40,6 +40,7 @@ __all__ = [
     "compare_communication",
     "compare_samples",
     "compute_communication",
+    "compute_dbfree_communication",
     "compute_communication_patterns",
     "compute_pathway_clusters",
     "compute_pathway_embedding",

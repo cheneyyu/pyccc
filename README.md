@@ -331,8 +331,9 @@ columns and common OmniPath-style aliases such as `source_genesymbol` and
 Experimental DB-free target-species CCC API:
 
 ```python
-predicted_db = pc.predict_lr_dbfree(
+res, predicted_db = pc.compute_dbfree_communication(
     adata,
+    groupby="cell_type",
     protein_sequence_key="protein_sequence",  # or cds_sequence_key="cds"
     gene_id_key="gene_id",
     species_name="target_species",
@@ -341,22 +342,20 @@ predicted_db = pc.predict_lr_dbfree(
     min_score=0.50,
     max_pairs=50000,
     nearest_neighbor_pairs=10000,  # optional ESMC-space recall candidates
-)
-
-res = pc.compute_communication(
-    adata,
-    groupby="cell_type",
-    lr_table=predicted_db,
-    gene_symbols_key="gene_id",
     score_method="cellchat",
+    return_lr_table=True,
 )
 ```
 
 Sequence input can come from a FASTA file (`protein_fasta=` or `cds_fasta=`)
 or directly from `adata.var`. For example, add `adata.var["cds"]` and call
-`predict_lr_dbfree(..., cds_sequence_key="cds", gene_id_key="gene_id")`; CDS
-records are translated before ESMC embedding. If you already have amino-acid
-sequences, use `protein_sequence_key="protein_sequence"` instead.
+`compute_dbfree_communication(..., cds_sequence_key="cds",
+gene_id_key="gene_id")`; CDS records are translated before ESMC embedding. If
+you already have amino-acid sequences, use
+`protein_sequence_key="protein_sequence"` instead.
+
+Use `predict_lr_dbfree(...)` directly when you want to inspect or export the
+predicted LR table before running communication.
 
 The universal LightGBM role and pair models are bundled with the Python package,
 so `predict_lr_dbfree(...)` works after a normal `pyccc[predict]` install unless

@@ -37,17 +37,20 @@ Required inputs:
 ## Sequence Preparation
 
 The shortest path is to store sequences in `adata.var` and point
-`predict_lr_dbfree(...)` at that column:
+`compute_dbfree_communication(...)` at that column:
 
 ```python
 adata.var["cds"] = cds_by_gene.reindex(adata.var["gene_id"]).to_numpy()
 
-predicted_db = pc.predict_lr_dbfree(
+res, predicted_db = pc.compute_dbfree_communication(
     adata,
+    groupby="cell_type",
     cds_sequence_key="cds",
     gene_id_key="gene_id",
     species_name="target_species",
     density_prior="auto",
+    score_method="cellchat",
+    return_lr_table=True,
 )
 ```
 
@@ -90,10 +93,11 @@ proteins = pc.load_protein_fasta(
 ```
 
 `match_expression_genes(...)` reports both expression-only genes and
-protein-only genes without mutating `adata.var_names`. The end-to-end
-`predict_lr_dbfree(...)` wrapper stores the same match table in
-`predicted_db.metadata["gene_match"]` and adds match counts to
-`predicted_db.metadata["prediction_summary"]`.
+protein-only genes without mutating `adata.var_names`. The prediction step
+stores the same match table in `predicted_db.metadata["gene_match"]` and adds
+match counts to `predicted_db.metadata["prediction_summary"]`. The one-step
+`compute_dbfree_communication(...)` wrapper also attaches the predicted LR table
+and DB-free summary under `res.metadata`.
 
 ## Embeddings and Roles
 
@@ -228,8 +232,9 @@ print(density_gates.attrs["passed"])
 ## End-to-End Wrapper
 
 ```python
-predicted_db = pc.predict_lr_dbfree(
+res, predicted_db = pc.compute_dbfree_communication(
     adata,
+    groupby="cell_type",
     protein_sequence_key="protein_sequence",  # or cds_sequence_key="cds"
     gene_id_key="gene_id",
     species_name="target_species",
@@ -241,14 +246,8 @@ predicted_db = pc.predict_lr_dbfree(
     max_pairs_per_ligand=200,
     max_pairs_per_receptor=200,
     cache_dir=".pyccc-cache",
-)
-
-res = pc.compute_communication(
-    adata,
-    groupby="cell_type",
-    lr_table=predicted_db,
-    gene_symbols_key="gene_id",
     score_method="cellchat",
+    return_lr_table=True,
 )
 ```
 
@@ -259,8 +258,10 @@ exclusive so the provenance stored in
 `predicted_db.metadata["dbfree_model_stack"]["sequence_source"]` remains
 unambiguous.
 
-`compute_communication` remains deterministic. It does not infer LR pairs
-silently; prediction is an explicit upstream step.
+If you want to inspect or export the LR table before communication, call
+`predict_lr_dbfree(...)` directly and pass the returned table to
+`compute_communication(...)`. Communication itself remains deterministic; it
+does not infer LR pairs silently.
 
 `predict_lr_dbfree(...)` forwards density-threshold parameters to
 `build_predicted_lr_table(...)`, including `min_score`, `max_pairs`,

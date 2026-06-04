@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Iterable
 import warnings
@@ -30,6 +30,7 @@ class CCCResult:
     condition: str | None = None
     lr_name: str = "custom"
     pvalue_cutoff: float = 0.05
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def significant(self, pvalue_cutoff: float | None = None) -> pd.DataFrame:
         cutoff = self.pvalue_cutoff if pvalue_cutoff is None else pvalue_cutoff

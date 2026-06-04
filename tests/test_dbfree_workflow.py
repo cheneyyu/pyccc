@@ -161,6 +161,50 @@ def test_dbfree_prediction_can_translate_cds_sequences_from_var():
     assert not predicted.interactions.empty
 
 
+def test_dbfree_communication_shortcut_reads_cds_from_var():
+    adata = AnnData(
+        np.array([[4, 0], [5, 0], [0, 3], [0, 4]], dtype=float),
+        obs=pd.DataFrame({"cell_type": ["A", "A", "B", "B"]}, index=[f"c{i}" for i in range(4)]),
+        var=pd.DataFrame(
+            {
+                "gene_id": ["L1", "R1"],
+                "cds": [
+                    "ATGTGCTGCTGCTGCTGCTAA",
+                    "ATGGCGGTGGTGGTGGTGTAA",
+                ],
+            },
+            index=["ligand_row", "receptor_row"],
+        ),
+    )
+
+    result, predicted = pc.compute_dbfree_communication(
+        adata,
+        groupby="cell_type",
+        cds_sequence_key="cds",
+        gene_id_key="gene_id",
+        species_name="toy",
+        model="heuristic",
+        role_model=None,
+        ligand_candidates=["L1"],
+        receptor_candidates=["R1"],
+        embedding_backend="hash",
+        allow_fixture_models=True,
+        density_prior=1.0,
+        min_score=0.0,
+        max_pairs=1,
+        allow_low_score_density_fill=True,
+        expression_min_fraction=0.0,
+        min_pct=0.0,
+        return_lr_table=True,
+    )
+
+    assert not predicted.interactions.empty
+    assert not result.interactions.empty
+    assert result.metadata["dbfree_lr_table"] is predicted
+    assert result.metadata["dbfree_model_stack"]["sequence_source"] == "adata.var:cds"
+    assert result.metadata["dbfree_prediction_summary"].loc[0, "sequence_source"] == "adata.var:cds"
+
+
 def test_dbfree_production_stack_rejects_implicit_fixture_models(tmp_path):
     fasta = tmp_path / "proteins.fa"
     fasta.write_text(">pL gene=L1\nMCCCCCC\n>pR gene=R1\nMAVVVVV\n", encoding="utf-8")

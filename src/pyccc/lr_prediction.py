@@ -548,6 +548,157 @@ def predict_lr_dbfree(
     return db
 
 
+def compute_dbfree_communication(
+    adata,
+    groupby: str,
+    *,
+    cds_fasta: str | Path | None = None,
+    protein_fasta: str | Path | None = None,
+    cds_sequence_key: str | None = None,
+    protein_sequence_key: str | None = None,
+    gene_id_key: str | None = None,
+    protein_id_key: str | None = None,
+    transcript_id_key: str | None = None,
+    species_name: str = "target_species",
+    species_hint: str = "unknown",
+    model: str | Path = DEFAULT_DBFREE_PAIR_MODEL,
+    role_model: str | Path | None = DEFAULT_DBFREE_ROLE_MODEL,
+    density_prior: pd.DataFrame | float | str = "auto",
+    min_score: float = 0.50,
+    max_pairs: int = 50000,
+    max_pairs_per_ligand: int = 200,
+    max_pairs_per_receptor: int = 200,
+    allow_low_score_density_fill: bool = False,
+    cache_dir: str | Path | None = None,
+    embedding_backend: str = "auto",
+    embedding_model_name: str = ESMC_300M_MODEL_NAME,
+    embedding_model_revision: str | None = None,
+    allow_fixture_models: bool = False,
+    ligand_candidates: str | Path | Sequence[str] | None = None,
+    receptor_candidates: str | Path | Sequence[str] | None = None,
+    condition_key: str | None = None,
+    condition: str | None = None,
+    layer: str | None = None,
+    use_raw: bool = False,
+    gene_symbols_key: str | None = None,
+    min_pct: float = 0.05,
+    min_expr: float = 0.0,
+    n_permutations: int = 0,
+    random_state: int | None = 0,
+    pvalue_cutoff: float = 0.05,
+    aggregate: str = "tri_mean",
+    trim: float = 0.1,
+    clip_quantile: float = 0.99,
+    population_size: bool = False,
+    spatial_key: str | None = None,
+    distance_decay: float | None = None,
+    cofactor_adjust: bool = False,
+    cofactor_kh: float = 0.5,
+    cofactor_hill: float = 1.0,
+    score_method: str = "cellchat",
+    complex_aggregate: str = "auto",
+    n_jobs: int = 1,
+    array_backend: str | None = None,
+    downsample_per_group: int | None = None,
+    downsample_repeats: int = 1,
+    de_gate: bool = False,
+    overexpressed_genes: pd.DataFrame | dict[str, Iterable[str]] | None = None,
+    de_method: str = "mean",
+    de_min_pct: float = 0.1,
+    de_min_logfc: float = 0.1,
+    de_pvalue_cutoff: float | None = None,
+    return_lr_table: bool = False,
+    **candidate_kwargs,
+):
+    """Predict a DB-free LR table and compute communication in one call.
+
+    Sequence input can come from exactly one source: ``protein_fasta``,
+    ``cds_fasta``, ``protein_sequence_key`` in ``adata.var``, or
+    ``cds_sequence_key`` in ``adata.var``. When ``gene_id_key`` is provided and
+    ``gene_symbols_key`` is omitted, the same column is used to match predicted
+    LR genes back to the expression matrix.
+    """
+
+    predicted_db = predict_lr_dbfree(
+        adata,
+        cds_fasta=cds_fasta,
+        protein_fasta=protein_fasta,
+        cds_sequence_key=cds_sequence_key,
+        protein_sequence_key=protein_sequence_key,
+        gene_id_key=gene_id_key,
+        protein_id_key=protein_id_key,
+        transcript_id_key=transcript_id_key,
+        species_name=species_name,
+        species_hint=species_hint,
+        model=model,
+        role_model=role_model,
+        density_prior=density_prior,
+        min_score=min_score,
+        max_pairs=max_pairs,
+        max_pairs_per_ligand=max_pairs_per_ligand,
+        max_pairs_per_receptor=max_pairs_per_receptor,
+        allow_low_score_density_fill=allow_low_score_density_fill,
+        cache_dir=cache_dir,
+        embedding_backend=embedding_backend,
+        embedding_model_name=embedding_model_name,
+        embedding_model_revision=embedding_model_revision,
+        allow_fixture_models=allow_fixture_models,
+        ligand_candidates=ligand_candidates,
+        receptor_candidates=receptor_candidates,
+        **candidate_kwargs,
+    )
+
+    from .analysis import compute_communication
+
+    result = compute_communication(
+        adata,
+        groupby=groupby,
+        lr_table=predicted_db,
+        condition_key=condition_key,
+        condition=condition,
+        layer=layer,
+        use_raw=use_raw,
+        gene_symbols_key=gene_symbols_key if gene_symbols_key is not None else gene_id_key,
+        min_pct=min_pct,
+        min_expr=min_expr,
+        n_permutations=n_permutations,
+        random_state=random_state,
+        pvalue_cutoff=pvalue_cutoff,
+        aggregate=aggregate,
+        trim=trim,
+        clip_quantile=clip_quantile,
+        population_size=population_size,
+        spatial_key=spatial_key,
+        distance_decay=distance_decay,
+        cofactor_adjust=cofactor_adjust,
+        cofactor_kh=cofactor_kh,
+        cofactor_hill=cofactor_hill,
+        score_method=score_method,
+        complex_aggregate=complex_aggregate,
+        n_jobs=n_jobs,
+        array_backend=array_backend,
+        downsample_per_group=downsample_per_group,
+        downsample_repeats=downsample_repeats,
+        de_gate=de_gate,
+        overexpressed_genes=overexpressed_genes,
+        de_method=de_method,
+        de_min_pct=de_min_pct,
+        de_min_logfc=de_min_logfc,
+        de_pvalue_cutoff=de_pvalue_cutoff,
+    )
+    result.metadata.update(
+        {
+            "dbfree_lr_table": predicted_db,
+            "dbfree_prediction_summary": predicted_db.metadata.get("prediction_summary"),
+            "dbfree_model_stack": predicted_db.metadata.get("dbfree_model_stack"),
+            "dbfree_gene_match_summary": predicted_db.metadata.get("gene_match_summary"),
+        }
+    )
+    if return_lr_table:
+        return result, predicted_db
+    return result
+
+
 def _load_dbfree_proteins(
     adata,
     *,
