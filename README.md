@@ -1,10 +1,13 @@
 # pyccc
 
 [![CI](https://github.com/cheneyyu/pyccc/actions/workflows/ci.yml/badge.svg)](https://github.com/cheneyyu/pyccc/actions/workflows/ci.yml)
+[![Documentation Status](https://readthedocs.org/projects/pyccc/badge/?version=latest)](https://pyccc.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 `pyccc` is a Python/Scanpy implementation of the most useful CellChat-style
 cell-cell communication workflow:
+
+Documentation: https://pyccc.readthedocs.io/en/latest/
 
 - infer ligand-receptor communication from `AnnData`
 - summarize interaction count/weight networks
