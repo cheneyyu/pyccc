@@ -677,6 +677,7 @@ def _top_k_enrichment(summary: pd.DataFrame, null: pd.DataFrame, *, top_k_values
     columns = [
         "kernel",
         "score_type",
+        "null_model",
         "k",
         "n_pairs",
         "observed_mean",
@@ -693,28 +694,30 @@ def _top_k_enrichment(summary: pd.DataFrame, null: pd.DataFrame, *, top_k_values
             if score_col not in kernel_summary.columns:
                 continue
             ranked = _rank_top_predicted_pairs(kernel_summary, score_col=score_col)
-            for k in top_k_values:
-                kk = min(max(int(k), 1), len(ranked))
-                top = ranked.head(kk)
-                observed = float(top[score_col].astype(float).mean())
-                null_values = _top_k_null_values(null, top, kernel=str(kernel), score_type=score_col)
-                null_mean = float(null_values.mean()) if len(null_values) else np.nan
-                null_sd = float(null_values.std(ddof=1)) if len(null_values) > 1 else 0.0
-                z = 0.0 if len(null_values) and null_sd == 0 else ((observed - null_mean) / null_sd if len(null_values) else np.nan)
-                pvalue = float((np.sum(null_values >= observed) + 1) / (len(null_values) + 1)) if len(null_values) else np.nan
-                rows.append(
-                    {
-                        "kernel": str(kernel),
-                        "score_type": score_col,
-                        "k": int(k),
-                        "n_pairs": int(kk),
-                        "observed_mean": observed,
-                        "null_mean": null_mean,
-                        "null_sd": null_sd,
-                        "top_k_enrichment_z": float(z),
-                        "top_k_empirical_pvalue": pvalue,
-                    }
-                )
+            for null_model in _top_k_null_models(null):
+                for k in top_k_values:
+                    kk = min(max(int(k), 1), len(ranked))
+                    top = ranked.head(kk)
+                    observed = float(top[score_col].astype(float).mean())
+                    null_values = _top_k_null_values(null, top, kernel=str(kernel), score_type=score_col, null_model=null_model)
+                    null_mean = float(null_values.mean()) if len(null_values) else np.nan
+                    null_sd = float(null_values.std(ddof=1)) if len(null_values) > 1 else 0.0
+                    z = 0.0 if len(null_values) and null_sd == 0 else ((observed - null_mean) / null_sd if len(null_values) else np.nan)
+                    pvalue = float((np.sum(null_values >= observed) + 1) / (len(null_values) + 1)) if len(null_values) else np.nan
+                    rows.append(
+                        {
+                            "kernel": str(kernel),
+                            "score_type": score_col,
+                            "null_model": str(null_model),
+                            "k": int(k),
+                            "n_pairs": int(kk),
+                            "observed_mean": observed,
+                            "null_mean": null_mean,
+                            "null_sd": null_sd,
+                            "top_k_enrichment_z": float(z),
+                            "top_k_empirical_pvalue": pvalue,
+                        }
+                    )
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -726,7 +729,14 @@ def _rank_top_predicted_pairs(summary: pd.DataFrame, *, score_col: str) -> pd.Da
     return summary.sort_values(score_col, ascending=False)
 
 
-def _top_k_null_values(null: pd.DataFrame, top: pd.DataFrame, *, kernel: str, score_type: str) -> np.ndarray:
+def _top_k_null_models(null: pd.DataFrame) -> list[str]:
+    if null.empty or "null_model" not in null:
+        return ["pooled"]
+    models = sorted(null["null_model"].dropna().astype(str).unique().tolist())
+    return ["pooled", *models]
+
+
+def _top_k_null_values(null: pd.DataFrame, top: pd.DataFrame, *, kernel: str, score_type: str, null_model: str) -> np.ndarray:
     if null.empty:
         return np.asarray([], dtype=float)
     keys = top[["ligand", "receptor"]].drop_duplicates().copy()
@@ -736,6 +746,10 @@ def _top_k_null_values(null: pd.DataFrame, top: pd.DataFrame, *, kernel: str, sc
     ].copy()
     if sub.empty:
         return np.asarray([], dtype=float)
+    if null_model != "pooled":
+        sub = sub[sub["null_model"].astype(str) == str(null_model)].copy()
+        if sub.empty:
+            return np.asarray([], dtype=float)
     sub = sub.merge(keys, on=["ligand", "receptor"], how="inner")
     if sub.empty:
         return np.asarray([], dtype=float)

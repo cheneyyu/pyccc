@@ -112,6 +112,10 @@ The pipeline writes:
 - `figures/dbfree_spatial_validation_main_source_tables.tar.gz`
 - `results/dbfree_validation/acceptance_report.tsv`
 
+`spatial_validation_top_k_enrichment.tsv` includes a `null_model` column.
+Rows are written for each individual null model plus a `pooled` summary. The
+main figure and acceptance gates use `matched_random_lr` rows when available.
+
 Final figure tables must not contain fixture warnings such as
 `hash_embedding_backend`, `heuristic_role_model`, `heuristic_pair_ranker`, or
 `default_unknown_density`.

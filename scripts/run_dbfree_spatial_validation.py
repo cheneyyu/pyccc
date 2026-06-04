@@ -335,6 +335,8 @@ def _baseline_comparison(topk: pd.DataFrame) -> pd.DataFrame:
     if topk.empty:
         return pd.DataFrame()
     key_cols = ["dataset", "species", "section_id", "kernel", "score_type", "k"]
+    if "null_model" in topk.columns:
+        key_cols.append("null_model")
     summary = topk.groupby([*key_cols, "validation_strategy"], as_index=False).agg(
         observed_mean=("observed_mean", "mean"),
         null_mean=("null_mean", "mean"),

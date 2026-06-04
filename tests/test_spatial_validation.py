@@ -63,8 +63,9 @@ def test_spatial_validation_reports_null_statistics():
     assert {("secreted_like", "exp"), ("membrane_contact_like", "contact")}.issubset(
         set(zip(report.role_kernel_enrichment["role_class"], report.role_kernel_enrichment["kernel"], strict=True))
     )
-    assert {"k", "score_type", "observed_mean", "top_k_enrichment_z", "top_k_empirical_pvalue"}.issubset(report.top_k_enrichment.columns)
+    assert {"k", "score_type", "null_model", "observed_mean", "top_k_enrichment_z", "top_k_empirical_pvalue"}.issubset(report.top_k_enrichment.columns)
     assert set(report.top_k_enrichment["k"]) == {100, 500, 1000}
+    assert {"pooled", "matched_random_lr"}.issubset(set(report.top_k_enrichment["null_model"].astype(str)))
     assert set(report.null_distribution["null_model"]) == {"coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"}
     assert {"ligand", "receptor", "kernel", "score_type", "score_value"}.issubset(report.null_distribution.columns)
     assert {"spatial_ccc_score", "model_weighted_spatial_ccc_score"}.issubset(set(report.null_distribution["score_type"]))

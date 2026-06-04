@@ -280,10 +280,15 @@ def _primary_topk(topk: pd.DataFrame) -> pd.DataFrame:
     required = {"kernel", "score_type", "k", "top_k_enrichment_z", "top_k_empirical_pvalue", "validation_strategy"}
     if not required.issubset(topk.columns):
         return pd.DataFrame()
-    return topk[
+    frame = topk[
         (topk["kernel"].astype(str) == "exp")
         & (topk["score_type"].astype(str) == "model_weighted_spatial_ccc_score")
     ].copy()
+    if "null_model" in frame.columns:
+        matched = frame[frame["null_model"].astype(str) == "matched_random_lr"].copy()
+        if not matched.empty:
+            return matched
+    return frame
 
 
 def _global_rows(results_root: Path, figures_dir: Path) -> list[dict[str, object]]:
