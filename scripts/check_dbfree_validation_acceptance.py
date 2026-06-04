@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from dbfree_validation_utils import load_manifest, manifest_results_dir, write_tsv
+from pyccc.model_resources import resolve_dbfree_model_path
 
 
 FORBIDDEN_FINAL_WARNINGS = {
@@ -103,22 +104,22 @@ def _model_warning_gate(dataset: str, results_dir: Path) -> dict[str, object]:
 def _model_artifact_gates(manifest: dict[str, object], results_dir: Path) -> list[dict[str, object]]:
     dataset = str(manifest["name"])
     cfg = dict(manifest.get("prediction", {}))
-    role_dir = Path(str(cfg.get("role_model", "")))
-    pair_dir = Path(str(cfg.get("pair_model", "")))
-    role_card = _read_json(role_dir / "model_card.json")
-    pair_card = _read_json(pair_dir / "model_card.json")
-    density = _read_density(pair_dir / "density_prior.tsv")
+    role_dir = _resolve_optional_model_dir(cfg.get("role_model"), expected_file="role_model.joblib")
+    pair_dir = _resolve_optional_model_dir(cfg.get("pair_model"), expected_file="lr_link_model.joblib")
+    role_card = _read_json(_model_file(role_dir, "model_card.json"))
+    pair_card = _read_json(_model_file(pair_dir, "model_card.json"))
+    density = _read_density(_model_file(pair_dir, "density_prior.tsv"))
     rows = [
-        _gate(dataset, "model", "role_model_file_exists", (role_dir / "role_model.joblib").exists(), str(role_dir / "role_model.joblib")),
-        _gate(dataset, "model", "role_model_card_exists", role_card is not None, str(role_dir / "model_card.json")),
+        _gate(dataset, "model", "role_model_file_exists", _model_file(role_dir, "role_model.joblib").exists(), _artifact_evidence(cfg.get("role_model"), role_dir, "role_model.joblib")),
+        _gate(dataset, "model", "role_model_card_exists", role_card is not None, _artifact_evidence(cfg.get("role_model"), role_dir, "model_card.json")),
         _gate(dataset, "model", "role_model_is_lightgbm", _card_value(role_card, "classifier") == "lightgbm", f"classifier={_card_value(role_card, 'classifier')}"),
         _gate(dataset, "model", "role_model_uses_esmc300m", _embedding_model_is_esmc300m(role_card), _embedding_evidence(role_card)),
-        _gate(dataset, "model", "pair_model_file_exists", (pair_dir / "lr_link_model.joblib").exists(), str(pair_dir / "lr_link_model.joblib")),
-        _gate(dataset, "model", "pair_model_card_exists", pair_card is not None, str(pair_dir / "model_card.json")),
+        _gate(dataset, "model", "pair_model_file_exists", _model_file(pair_dir, "lr_link_model.joblib").exists(), _artifact_evidence(cfg.get("pair_model"), pair_dir, "lr_link_model.joblib")),
+        _gate(dataset, "model", "pair_model_card_exists", pair_card is not None, _artifact_evidence(cfg.get("pair_model"), pair_dir, "model_card.json")),
         _gate(dataset, "model", "pair_model_is_lightgbm", _card_value(pair_card, "model_type") == "lightgbm", f"model_type={_card_value(pair_card, 'model_type')}"),
         _gate(dataset, "model", "pair_model_uses_esmc300m", _embedding_model_is_esmc300m(pair_card), _embedding_evidence(pair_card)),
         _gate(dataset, "model", "pair_model_training_metadata_present", _pair_training_metadata_present(pair_card), _pair_training_evidence(pair_card)),
-        _gate(dataset, "model", "density_prior_table_exists", density is not None and not density.empty, str(pair_dir / "density_prior.tsv")),
+        _gate(dataset, "model", "density_prior_table_exists", density is not None and not density.empty, _artifact_evidence(cfg.get("pair_model"), pair_dir, "density_prior.tsv")),
         _gate(dataset, "model", "density_prior_has_manifest_clade", _density_has_clade(density, str(manifest.get("clade", ""))), f"clade={manifest.get('clade', '')}"),
         _gate(dataset, "model", "validation_model_card_summary_exists", (results_dir / "validation_model_card.tsv").exists(), str(results_dir / "validation_model_card.tsv")),
     ]
@@ -136,6 +137,24 @@ def _model_artifact_gates(manifest: dict[str, object], results_dir: Path) -> lis
     else:
         rows.append(_gate(dataset, "model", "validation_model_card_has_checksums", False, str(results_dir / "validation_model_card.tsv")))
     return rows
+
+
+def _resolve_optional_model_dir(value: object, *, expected_file: str) -> Path | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return resolve_dbfree_model_path(str(value), expected_file=expected_file)
+
+
+def _model_file(path: Path | None, file_name: str) -> Path:
+    return (path / file_name) if path is not None else Path(file_name)
+
+
+def _artifact_evidence(manifest_value: object, resolved_dir: Path | None, file_name: str) -> str:
+    manifest_text = str(manifest_value or "")
+    resolved = str(_model_file(resolved_dir, file_name)) if resolved_dir is not None else ""
+    if manifest_text and resolved and manifest_text != str(resolved_dir):
+        return f"manifest={manifest_text}; resolved={resolved}"
+    return resolved or manifest_text or file_name
 
 
 def _read_json(path: Path) -> dict[str, object] | None:

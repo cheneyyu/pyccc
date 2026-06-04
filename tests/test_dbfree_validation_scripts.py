@@ -53,6 +53,12 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
                 "spatial_key": "spatial",
                 "gene_id_key": "gene_id",
                 "publishable_gene_match_min": 0.5,
+                "prediction": {
+                    "role_model": "universal_esmc300m_lgbm_role_classifiers_v0",
+                    "pair_model": "universal_esmc300m_lgbm_pair_ranker_v0",
+                    "density_prior": "auto",
+                    "embedding_model": "biohub/esmc-300m-2024-12",
+                },
                 "sections": [
                     {
                         "name": "toy_section",
@@ -184,6 +190,12 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert "gene=L1" in normalized_fasta.read_text(encoding="utf-8")
     model_summary = pd.read_csv(dataset_dir / "validation_model_card.tsv", sep="\t")
     assert {"role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16", "training_resources", "clades_included"}.issubset(model_summary.columns)
+    assert model_summary["role_model_manifest"].iloc[0] == "universal_esmc300m_lgbm_role_classifiers_v0"
+    assert model_summary["pair_model_manifest"].iloc[0] == "universal_esmc300m_lgbm_pair_ranker_v0"
+    assert model_summary["role_model_path"].str.contains("src/pyccc/models/universal_esmc300m_lgbm_role_classifiers_v0", regex=False).all()
+    assert model_summary["pair_model_path"].str.contains("src/pyccc/models/universal_esmc300m_lgbm_pair_ranker_v0", regex=False).all()
+    checksum_lengths = model_summary[["role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16"]].fillna("").astype(str).apply(lambda col: col.str.len())
+    assert checksum_lengths.ge(16).all().all()
     assert (dataset_dir / "spatial_validation_summary.tsv").exists()
     assert (results / "baseline_comparison.tsv").exists()
     for ext in ("png", "svg", "pdf"):
@@ -195,6 +207,11 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert {"data", "sequence", "model", "spatial", "figure", "reproducibility"}.issubset(set(report["category"]))
     model_gates = set(report.loc[report["category"] == "model", "gate"])
     assert {"role_model_file_exists", "pair_model_card_exists", "density_prior_table_exists", "validation_model_card_has_checksums"}.issubset(model_gates)
+    model_gate_status = report.loc[report["category"] == "model"].set_index("gate")["passed"].astype(bool)
+    assert model_gate_status.loc["role_model_file_exists"]
+    assert model_gate_status.loc["pair_model_file_exists"]
+    assert model_gate_status.loc["density_prior_table_exists"]
+    assert not model_gate_status.loc["density_prior_has_manifest_clade"]
 
 
 def _run(script, *args):

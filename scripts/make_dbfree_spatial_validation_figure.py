@@ -12,7 +12,7 @@ from scipy import sparse
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the DB-free spatial validation manuscript figure from source TSV tables.")
+    parser = argparse.ArgumentParser(description="Build the DB-free spatial validation documentation figure from source TSV tables.")
     parser.add_argument("--results-dir", default="results/dbfree_validation")
     parser.add_argument("--output-prefix", default="figures/dbfree_spatial_validation_main")
     args = parser.parse_args()

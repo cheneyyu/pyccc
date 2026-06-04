@@ -74,8 +74,8 @@ The SOTA manifest uses the SOTA soybean download page for `SAM.spatial.h5ad`
 and `Leaf.spatial.h5ad`.
 
 `required_final_sections` records the sections that must be prepared before a
-publishable final run can pass acceptance: `Control_Juv`, `5DPI_1`, and
-`30DPI` for ARTISTA; `SAM` and `Leaf` for SOTA.
+full validation run can pass acceptance: `Control_Juv`, `5DPI_1`, and `30DPI`
+for ARTISTA; `SAM` and `Leaf` for SOTA.
 
 Each manifest also records a target-species `protein_source`: URL, raw local
 FASTA path, gene-ID regex, optional gene-ID replacements, and isoform selection
@@ -85,6 +85,13 @@ headers rewritten as `gene=<expression_gene_id>`. When
 `restrict_to_expression` is enabled, that prediction FASTA is further limited
 to genes present in the prepared spatial sections, avoiding unnecessary
 ESMC-300M embedding of proteins that cannot enter the CCC analysis.
+
+`prediction.role_model` and `prediction.pair_model` may be bundled model
+directory names such as `animal_esmc300m_lgbm_pair_ranker_v0` or
+`universal_esmc300m_lgbm_pair_ranker_v0`. The validation runner and acceptance
+checker resolve those names through `pyccc.model_resources`, so the same
+manifests work from a source checkout or a pip-from-git install. Pass explicit
+filesystem paths only when replacing the bundled models.
 
 ## Reproduce
 
@@ -197,7 +204,7 @@ Final figure tables must not contain fixture warnings such as
 
 ## Acceptance Gates
 
-For ARTISTA, a publishable run requires at least two of three selected main
+For ARTISTA, a full validation run requires at least two of three selected main
 sections to have top-500 or top-1000 DB-free enrichment z-score at least 2,
 empirical p-value at most 0.05 against matched random LR, and improvement over
 role-only or materially better top-K stability.

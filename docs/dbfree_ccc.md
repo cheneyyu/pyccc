@@ -181,7 +181,7 @@ predicted_db = pc.predict_lr_dbfree(
     role_model=None,
     ligand_candidates="known_secreted_genes.txt",
     receptor_candidates="known_surface_genes.txt",
-    model="models/universal_esmc300m_lgbm_pair_ranker_v0",
+    model="universal_esmc300m_lgbm_pair_ranker_v0",
     density_prior="auto",
 )
 ```

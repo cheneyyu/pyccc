@@ -15,6 +15,7 @@ from scipy.spatial.distance import cdist
 import pyccc as pc
 from pyccc import spatial_validation as sv
 from pyccc.database import normalize_lr_table
+from pyccc.model_resources import resolve_dbfree_model_path
 from dbfree_validation_utils import (
     checksum_short,
     load_manifest,
@@ -175,8 +176,16 @@ def _load_or_predict_lr(
     if path.exists():
         return pd.read_csv(path, sep="\t")
     cfg = dict(manifest.get("prediction", {}))
-    required_paths = [cfg.get("role_model"), cfg.get("pair_model"), manifest.get("protein_fasta")]
-    missing = [str(item) for item in required_paths if not item or not Path(str(item)).exists()]
+    role_model = _resolve_optional_model_dir(cfg.get("role_model"), expected_file="role_model.joblib")
+    pair_model = _resolve_optional_model_dir(cfg.get("pair_model"), expected_file="lr_link_model.joblib")
+    protein_fasta = Path(str(manifest.get("protein_fasta", "")))
+    missing = []
+    if role_model is None or not (role_model / "role_model.joblib").exists():
+        missing.append(str(cfg.get("role_model") or "prediction.role_model"))
+    if pair_model is None or not (pair_model / "lr_link_model.joblib").exists():
+        missing.append(str(cfg.get("pair_model") or "prediction.pair_model"))
+    if not protein_fasta.exists():
+        missing.append(str(manifest.get("protein_fasta") or "protein_fasta"))
     if missing:
         raise FileNotFoundError(
             "No predicted LR table was found and prediction inputs are missing: "
@@ -193,8 +202,8 @@ def _load_or_predict_lr(
         gene_id_key="gene_id",
         species_name=str(manifest["species"]).replace(" ", "_"),
         species_hint=str(manifest.get("clade", manifest.get("species_hint", "unknown"))),
-        role_model=str(cfg["role_model"]),
-        model=str(cfg["pair_model"]),
+        role_model=str(role_model),
+        model=str(pair_model),
         density_prior=cfg.get("density_prior", "auto"),
         embedding_model_name=str(cfg.get("embedding_model", pc.ESMC_300M_MODEL_NAME)),
         expression_min_fraction=float(cfg.get("expression_min_fraction", 0.01)),
@@ -242,32 +251,36 @@ def _union_gene_lookup(adatas: list) -> dict[str, str]:
 
 def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) -> None:
     cfg = dict(manifest.get("prediction", {}))
-    role_path = Path(str(cfg.get("role_model", "")))
-    pair_path = Path(str(cfg.get("pair_model", "")))
-    role_card = _read_json(role_path / "model_card.json")
-    pair_card = _read_json(pair_path / "model_card.json")
+    role_manifest = str(cfg.get("role_model", ""))
+    pair_manifest = str(cfg.get("pair_model", ""))
+    role_path = _resolve_optional_model_dir(role_manifest, expected_file="role_model.joblib")
+    pair_path = _resolve_optional_model_dir(pair_manifest, expected_file="lr_link_model.joblib")
+    role_card = _read_json(_model_file(role_path, "model_card.json"))
+    pair_card = _read_json(_model_file(pair_path, "model_card.json"))
     rows = [
         {
             "dataset": manifest["name"],
             "embedding_model_name": cfg.get("embedding_model", pc.ESMC_300M_MODEL_NAME),
-            "role_model_path": str(role_path),
-            "role_model_checksum16": checksum_short(role_path / "role_model.joblib"),
-            "role_model_card_checksum16": checksum_short(role_path / "model_card.json"),
+            "role_model_manifest": role_manifest,
+            "role_model_path": _model_path_string(role_path),
+            "role_model_checksum16": _checksum_model_file(role_path, "role_model.joblib"),
+            "role_model_card_checksum16": _checksum_model_file(role_path, "model_card.json"),
             "role_model_stack": _card_string(role_card, "model_stack"),
             "role_model_classifier": _card_string(role_card, "classifier"),
             "role_embedding_model_name": _embedding_card_value(role_card, "model_name"),
             "role_embedding_model_revision": _embedding_card_value(role_card, "model_revision"),
             "role_embedding_backend": _embedding_card_value(role_card, "embedding_backend"),
-            "pair_model_path": str(pair_path),
-            "pair_model_checksum16": checksum_short(pair_path / "lr_link_model.joblib"),
-            "pair_model_card_checksum16": checksum_short(pair_path / "model_card.json"),
+            "pair_model_manifest": pair_manifest,
+            "pair_model_path": _model_path_string(pair_path),
+            "pair_model_checksum16": _checksum_model_file(pair_path, "lr_link_model.joblib"),
+            "pair_model_card_checksum16": _checksum_model_file(pair_path, "model_card.json"),
             "pair_model_stack": _card_string(pair_card, "model_stack"),
             "pair_model_type": _card_string(pair_card, "model_type"),
             "pair_embedding_model_name": _embedding_card_value(pair_card, "model_name"),
             "pair_embedding_model_revision": _embedding_card_value(pair_card, "model_revision"),
             "pair_embedding_backend": _embedding_card_value(pair_card, "embedding_backend"),
-            "density_prior_path": str(pair_path / "density_prior.tsv"),
-            "density_prior_checksum16": checksum_short(pair_path / "density_prior.tsv"),
+            "density_prior_path": str(_model_file(pair_path, "density_prior.tsv")),
+            "density_prior_checksum16": _checksum_model_file(pair_path, "density_prior.tsv"),
             "density_prior": cfg.get("density_prior", "auto"),
             "density_prior_groupby": _card_string(pair_card, "density_prior_groupby"),
             "negative_sampling_strategy": _card_string(pair_card, "negative_strategy"),
@@ -278,6 +291,24 @@ def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) ->
         }
     ]
     write_tsv(pd.DataFrame(rows), results_dir / "validation_model_card.tsv")
+
+
+def _resolve_optional_model_dir(value: object, *, expected_file: str) -> Path | None:
+    if value is None or str(value).strip() == "":
+        return None
+    return resolve_dbfree_model_path(str(value), expected_file=expected_file)
+
+
+def _model_file(path: Path | None, file_name: str) -> Path:
+    return (path / file_name) if path is not None else Path(file_name)
+
+
+def _model_path_string(path: Path | None) -> str:
+    return str(path) if path is not None else ""
+
+
+def _checksum_model_file(path: Path | None, file_name: str) -> str:
+    return checksum_short(path / file_name) if path is not None else ""
 
 
 def _read_json(path: Path) -> dict[str, object]:

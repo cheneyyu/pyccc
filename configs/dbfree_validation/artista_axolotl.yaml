@@ -91,8 +91,8 @@
     }
   ],
   "prediction": {
-    "role_model": "src/pyccc/models/animal_esmc300m_lgbm_role_classifiers_v0",
-    "pair_model": "src/pyccc/models/animal_esmc300m_lgbm_pair_ranker_v0",
+    "role_model": "animal_esmc300m_lgbm_role_classifiers_v0",
+    "pair_model": "animal_esmc300m_lgbm_pair_ranker_v0",
     "density_prior": "auto",
     "embedding_model": "biohub/esmc-300m-2024-12",
     "expression_min_fraction": 0.01,
