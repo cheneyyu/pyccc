@@ -264,15 +264,40 @@ def _artista_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:
     if topk.empty:
         return _gate(dataset, "spatial", "artista_main_gate", False, "missing spatial_validation_top_k_enrichment.tsv")
     frame = _primary_topk(topk)
-    frame = frame[(frame["validation_strategy"].astype(str) == "dbfree") & (frame["k"].astype(int).isin([500, 1000]))]
+    frame = frame[frame["k"].astype(int).isin([500, 1000])].copy()
     if frame.empty:
-        return _gate(dataset, "spatial", "artista_main_gate", False, "missing dbfree top-500/top-1000 rows")
-    by_section = frame.groupby("section_id").agg(
-        max_z=("top_k_enrichment_z", "max"),
-        min_p=("top_k_empirical_pvalue", "min"),
-    )
-    passing = by_section[(by_section["max_z"] >= 2.0) & (by_section["min_p"] <= 0.05)]
-    return _gate(dataset, "spatial", "artista_main_gate", len(passing) >= 2, f"passing_sections={len(passing)}")
+        return _gate(dataset, "spatial", "artista_main_gate", False, "missing top-500/top-1000 rows")
+    passing_sections = _artista_passing_sections(frame)
+    role_sections = set(frame.loc[frame["validation_strategy"].astype(str) == "role_only", "section_id"].astype(str))
+    missing_role = sorted(set(frame.loc[frame["validation_strategy"].astype(str) == "dbfree", "section_id"].astype(str)) - role_sections)
+    evidence = f"passing_sections={len(passing_sections)}"
+    if missing_role:
+        evidence += f"; missing_role_only={','.join(missing_role)}"
+    return _gate(dataset, "spatial", "artista_main_gate", len(passing_sections) >= 2, evidence)
+
+
+def _artista_passing_sections(frame: pd.DataFrame) -> list[str]:
+    passing = []
+    for section, section_frame in frame.groupby("section_id", sort=False):
+        dbfree = section_frame[section_frame["validation_strategy"].astype(str) == "dbfree"].copy()
+        role = section_frame[section_frame["validation_strategy"].astype(str) == "role_only"].copy()
+        if dbfree.empty or role.empty:
+            continue
+        dbfree["top_k_enrichment_z"] = pd.to_numeric(dbfree["top_k_enrichment_z"], errors="coerce")
+        dbfree["top_k_empirical_pvalue"] = pd.to_numeric(dbfree["top_k_empirical_pvalue"], errors="coerce")
+        role["top_k_enrichment_z"] = pd.to_numeric(role["top_k_enrichment_z"], errors="coerce")
+        role["top_k_empirical_pvalue"] = pd.to_numeric(role["top_k_empirical_pvalue"], errors="coerce")
+        dbfree_pass = (dbfree["top_k_enrichment_z"] >= 2.0) & (dbfree["top_k_empirical_pvalue"] <= 0.05)
+        if not bool(dbfree_pass.any()):
+            continue
+        dbfree_best_z = float(dbfree["top_k_enrichment_z"].max())
+        role_best_z = float(role["top_k_enrichment_z"].max())
+        role_pass = (role["top_k_enrichment_z"] >= 2.0) & (role["top_k_empirical_pvalue"] <= 0.05)
+        improves_role = dbfree_best_z > role_best_z
+        more_stable_topk = int(dbfree_pass.sum()) > int(role_pass.sum())
+        if improves_role or more_stable_topk:
+            passing.append(str(section))
+    return passing
 
 
 def _sota_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import subprocess
 import sys
@@ -212,6 +213,55 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert model_gate_status.loc["pair_model_file_exists"]
     assert model_gate_status.loc["density_prior_table_exists"]
     assert not model_gate_status.loc["density_prior_has_manifest_clade"]
+
+
+def test_artista_acceptance_requires_role_only_control(tmp_path):
+    checker = _load_script("check_dbfree_validation_acceptance")
+    results_dir = tmp_path / "artista"
+    results_dir.mkdir()
+    dbfree_rows = [
+        _topk_row(section, strategy="dbfree", z=z, p=0.01, k=k)
+        for section, z in [("Control_Juv", 8.0), ("5DPI_1", 7.0), ("30DPI", 1.0)]
+        for k in (500, 1000)
+    ]
+    pd.DataFrame(dbfree_rows).to_csv(results_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t", index=False)
+
+    missing_control = checker._artista_spatial_gate("artista_axolotl", results_dir)
+    assert not missing_control["passed"]
+    assert "missing_role_only" in missing_control["evidence"]
+
+    rows = dbfree_rows + [
+        _topk_row(section, strategy="role_only", z=z, p=0.02, k=k)
+        for section, z in [("Control_Juv", 3.0), ("5DPI_1", 2.5), ("30DPI", 0.5)]
+        for k in (500, 1000)
+    ]
+    pd.DataFrame(rows).to_csv(results_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t", index=False)
+    passing = checker._artista_spatial_gate("artista_axolotl", results_dir)
+    assert passing["passed"]
+    assert "passing_sections=2" in passing["evidence"]
+
+
+def _topk_row(section: str, *, strategy: str, z: float, p: float, k: int) -> dict[str, object]:
+    return {
+        "section_id": section,
+        "validation_strategy": strategy,
+        "kernel": "exp",
+        "score_type": "model_weighted_spatial_ccc_score",
+        "null_model": "matched_random_lr",
+        "k": k,
+        "top_k_enrichment_z": z,
+        "top_k_empirical_pvalue": p,
+    }
+
+
+def _load_script(name: str):
+    path = ROOT / "scripts" / f"{name}.py"
+    sys.path.insert(0, str(path.parent))
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(script, *args):
