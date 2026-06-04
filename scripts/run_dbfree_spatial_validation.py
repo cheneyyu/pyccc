@@ -96,6 +96,16 @@ def main() -> None:
                     random_state=int(spatial_cfg.get("random_seed", 0)),
                 )
                 report_tables["distance_decay"].append(_with_context(decay, context))
+                _append_distance_decay_null_controls(
+                    report_tables["distance_decay"],
+                    adata,
+                    lr_table,
+                    context,
+                    gene_id_key="gene_id",
+                    null_models=null_models,
+                    random_state=int(spatial_cfg.get("random_seed", 0)),
+                    max_cells=distance_decay_max_cells,
+                )
                 continue
             if args.top_k_only:
                 fast_report = _fast_topk_validation(
@@ -118,6 +128,17 @@ def main() -> None:
                 )
                 for key, frame in fast_report.items():
                     report_tables[key].append(_with_context(frame, context))
+                if compute_distance_decay:
+                    _append_distance_decay_null_controls(
+                        report_tables["distance_decay"],
+                        adata,
+                        lr_table,
+                        context,
+                        gene_id_key="gene_id",
+                        null_models=null_models,
+                        random_state=int(spatial_cfg.get("random_seed", 0)),
+                        max_cells=distance_decay_max_cells,
+                    )
                 continue
             report = pc.validate_spatial_lr_table(
                 adata,
@@ -146,12 +167,25 @@ def main() -> None:
             report_tables["top_k_enrichment"].append(_with_context(top_k_enrichment, context))
             report_tables["role_kernel_enrichment"].append(_with_context(role_kernel_enrichment, context))
             report_tables["distance_decay"].append(_with_context(report.distance_decay, context))
+            if compute_distance_decay:
+                _append_distance_decay_null_controls(
+                    report_tables["distance_decay"],
+                    adata,
+                    lr_table,
+                    context,
+                    gene_id_key="gene_id",
+                    null_models=null_models,
+                    random_state=int(spatial_cfg.get("random_seed", 0)),
+                    max_cells=distance_decay_max_cells,
+                )
             report_tables["section_reproducibility"].append(_with_context(report.section_reproducibility, context))
 
     keys_to_write = ("distance_decay",) if args.distance_decay_only else tuple(report_tables)
     for key in keys_to_write:
         frames = report_tables[key]
         frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if key == "top_k_enrichment":
+            frame = _add_topk_reporting_aliases(frame)
         write_tsv(frame, results_dir / f"spatial_validation_{key}.tsv")
     if not args.distance_decay_only:
         _write_global_baseline_tables(results_dir.parent)
@@ -519,6 +553,53 @@ def _fast_distance_decay(
             )
         )
     return pd.concat(rows, ignore_index=True)
+
+
+def _append_distance_decay_null_controls(
+    tables: list[pd.DataFrame],
+    adata,
+    lr_table: pd.DataFrame,
+    context: dict[str, object],
+    *,
+    gene_id_key: str,
+    null_models: Sequence[str],
+    random_state: int,
+    max_cells: int | None,
+) -> None:
+    if str(context.get("validation_strategy", "")) != "dbfree":
+        return
+    requested = [model for model in ("matched_random_lr", "score_permutation") if model in set(map(str, null_models))]
+    if not requested:
+        return
+    rng = np.random.default_rng(random_state + 1701)
+    gene_expression = _global_gene_expression(adata, gene_id_key=gene_id_key)
+    matched_pool = _matched_random_pool(lr_table, gene_expression) if "matched_random_lr" in requested else None
+    for null_model in requested:
+        if null_model == "matched_random_lr":
+            control_lr = _sample_matched_random_lr(matched_pool, rng) if matched_pool is not None else lr_table.copy()
+        elif null_model == "score_permutation":
+            control_lr = lr_table.copy()
+            if "model_score" in control_lr.columns:
+                control_lr["model_score"] = rng.permutation(control_lr["model_score"].to_numpy())
+            if "confidence" in control_lr.columns:
+                control_lr["confidence"] = control_lr["model_score"] if "model_score" in control_lr.columns else rng.permutation(control_lr["confidence"].to_numpy())
+        else:
+            continue
+        decay = _fast_distance_decay(
+            adata,
+            control_lr,
+            groupby="pyccc_group",
+            spatial_key="spatial",
+            gene_id_key=gene_id_key,
+            max_cells=max_cells,
+            random_state=random_state,
+        )
+        if decay.empty:
+            continue
+        control_context = dict(context)
+        control_context["validation_strategy"] = null_model
+        control_context["validation_score_method"] = "distance_decay_null_control"
+        tables.append(_with_context(decay, control_context))
 
 
 def _fast_topk_validation(
@@ -965,12 +1046,16 @@ def _top_k_rows(
                     "score_type": score_col,
                     "null_model": null_model,
                     "k": int(k),
+                    "top_k": int(k),
                     "n_pairs": int(top["n_pairs"]),
                     "observed_mean": observed,
+                    "observed_score": observed,
                     "null_mean": null_mean,
                     "null_sd": null_sd,
                     "top_k_enrichment_z": float(z) if pd.notna(z) else np.nan,
                     "top_k_empirical_pvalue": pvalue,
+                    "enrichment_z": float(z) if pd.notna(z) else np.nan,
+                    "empirical_p": pvalue,
                 }
             )
     return pd.DataFrame(rows)
@@ -1029,9 +1114,24 @@ def _with_context(frame: pd.DataFrame, context: dict[str, object]) -> pd.DataFra
     return out
 
 
+def _add_topk_reporting_aliases(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    aliases = {
+        "top_k": "k",
+        "observed_score": "observed_mean",
+        "enrichment_z": "top_k_enrichment_z",
+        "empirical_p": "top_k_empirical_pvalue",
+    }
+    for alias, source in aliases.items():
+        if alias not in out.columns and source in out.columns:
+            out[alias] = out[source]
+    return out
+
+
 def _baseline_comparison(topk: pd.DataFrame) -> pd.DataFrame:
     if topk.empty:
         return pd.DataFrame()
+    topk = _add_topk_reporting_aliases(topk)
     key_cols = ["dataset", "species", "section_id", "kernel", "score_type", "k"]
     if "null_model" in topk.columns:
         key_cols.append("null_model")
@@ -1046,7 +1146,94 @@ def _baseline_comparison(topk: pd.DataFrame) -> pd.DataFrame:
     dbfree = summary[summary["validation_strategy"] == "dbfree"][key_cols + ["enrichment_z"]].rename(columns={"enrichment_z": "dbfree_enrichment_z"})
     out = summary.merge(dbfree, on=key_cols, how="left")
     out["delta_z_vs_dbfree"] = out["enrichment_z"] - out["dbfree_enrichment_z"]
+    out["dbfree_delta_z_vs_strategy"] = out["dbfree_enrichment_z"] - out["enrichment_z"]
+    if "k" in out.columns and "top_k" not in out.columns:
+        out["top_k"] = out["k"]
     return out
+
+
+def _baseline_section_delta(topk: pd.DataFrame) -> pd.DataFrame:
+    if topk.empty:
+        return pd.DataFrame()
+    frame = _add_topk_reporting_aliases(topk)
+    required = {"dataset", "species", "section_id", "kernel", "score_type", "k", "validation_strategy", "enrichment_z"}
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    key_cols = ["dataset", "species", "section_id", "kernel", "score_type", "k"]
+    if "null_model" in frame.columns:
+        key_cols.append("null_model")
+    summary = frame.groupby([*key_cols, "validation_strategy"], as_index=False).agg(
+        enrichment_z=("enrichment_z", "mean"),
+        empirical_p=("empirical_p", "mean"),
+        observed_score=("observed_score", "mean"),
+        null_mean=("null_mean", "mean"),
+        n_permutations=("n_permutations", "max"),
+    )
+    summary["enrichment_z"] = pd.to_numeric(summary["enrichment_z"], errors="coerce")
+    dbfree = summary[(summary["validation_strategy"] == "dbfree") & summary["enrichment_z"].notna()][
+        key_cols + ["enrichment_z", "empirical_p", "observed_score", "n_permutations"]
+    ].rename(
+        columns={
+            "enrichment_z": "dbfree_enrichment_z",
+            "empirical_p": "dbfree_empirical_p",
+            "observed_score": "dbfree_observed_score",
+        }
+    )
+    baselines = summary[
+        summary["validation_strategy"].isin(["role_only", "embedding_cosine", "expression_only"]) & summary["enrichment_z"].notna()
+    ].copy()
+    if baselines.empty or dbfree.empty:
+        return pd.DataFrame()
+    idx = baselines.groupby(key_cols)["enrichment_z"].idxmax()
+    best = baselines.loc[idx, key_cols + ["validation_strategy", "enrichment_z", "empirical_p", "observed_score"]].rename(
+        columns={
+            "validation_strategy": "best_non_model_strategy",
+            "enrichment_z": "best_non_model_enrichment_z",
+            "empirical_p": "best_non_model_empirical_p",
+            "observed_score": "best_non_model_observed_score",
+        }
+    )
+    out = dbfree.merge(best, on=key_cols, how="inner")
+    out["delta_z"] = out["dbfree_enrichment_z"] - out["best_non_model_enrichment_z"]
+    out["top_k"] = out["k"]
+    return out
+
+
+def _baseline_section_delta_summary(delta: pd.DataFrame, *, random_seed: int = 0, bootstrap_iterations: int = 10000) -> pd.DataFrame:
+    if delta.empty:
+        return pd.DataFrame()
+    key_cols = ["dataset", "species", "kernel", "score_type", "k"]
+    if "null_model" in delta.columns:
+        key_cols.append("null_model")
+    rows = []
+    rng = np.random.default_rng(random_seed)
+    for key, sub in delta.groupby(key_cols, sort=False):
+        values = pd.to_numeric(sub["delta_z"], errors="coerce").dropna().to_numpy(dtype=float)
+        if len(values) == 0:
+            continue
+        if len(values) == 1:
+            ci_low = ci_high = median = float(values[0])
+        else:
+            draws = rng.choice(values, size=(int(bootstrap_iterations), len(values)), replace=True)
+            medians = np.median(draws, axis=1)
+            median = float(np.median(values))
+            ci_low, ci_high = [float(item) for item in np.quantile(medians, [0.025, 0.975])]
+        row = dict(zip(key_cols, key if isinstance(key, tuple) else (key,), strict=True))
+        row.update(
+            {
+                "top_k": int(row["k"]),
+                "n_sections": int(sub["section_id"].nunique()),
+                "median_delta_z": median,
+                "mean_delta_z": float(values.mean()),
+                "bootstrap_ci_low": ci_low,
+                "bootstrap_ci_high": ci_high,
+                "fraction_positive_delta_z": float((values > 0).mean()),
+                "random_seed": int(random_seed),
+                "bootstrap_iterations": int(bootstrap_iterations),
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _write_global_baseline_tables(results_root: Path) -> None:
@@ -1059,8 +1246,12 @@ def _write_global_baseline_tables(results_root: Path) -> None:
         if not frame.empty:
             frames.append(frame)
     topk = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    topk = _add_topk_reporting_aliases(topk)
+    delta = _baseline_section_delta(topk)
     write_tsv(topk, results_root / "baseline_topk_enrichment.tsv")
     write_tsv(_baseline_comparison(topk), results_root / "baseline_comparison.tsv")
+    write_tsv(delta, results_root / "baseline_section_delta.tsv")
+    write_tsv(_baseline_section_delta_summary(delta), results_root / "baseline_section_delta_summary.tsv")
 
 
 if __name__ == "__main__":

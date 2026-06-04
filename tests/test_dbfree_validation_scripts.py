@@ -136,6 +136,7 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     )
     topk = pd.read_csv(dataset_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t")
     assert topk["top_k_enrichment_z"].notna().any()
+    assert {"top_k", "observed_score", "enrichment_z", "empirical_p"}.issubset(topk.columns)
     assert set(topk["null_model"].astype(str)).issuperset({"matched_random_lr", "score_permutation"})
     compare_cols = [
         "validation_strategy",
@@ -169,6 +170,7 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert (dataset_dir / "spatial_validation_top_k_enrichment.tsv").read_text(encoding="utf-8") == topk_before
     distance_decay = pd.read_csv(dataset_dir / "spatial_validation_distance_decay.tsv", sep="\t")
     assert "model_weighted_mean_spatial_ccc_score" in distance_decay.columns
+    assert {"dbfree", "matched_random_lr", "score_permutation"}.issubset(set(distance_decay["validation_strategy"].astype(str)))
     figure_prefix = tmp_path / "figures" / "dbfree_spatial_validation_main"
     _run("scripts/make_dbfree_spatial_validation_figure.py", "--results-dir", results, "--output-prefix", figure_prefix)
     acceptance = subprocess.run(
@@ -202,6 +204,12 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert checksum_lengths.ge(16).all().all()
     assert (dataset_dir / "spatial_validation_summary.tsv").exists()
     assert (results / "baseline_comparison.tsv").exists()
+    assert (results / "baseline_section_delta.tsv").exists()
+    assert (results / "baseline_section_delta_summary.tsv").exists()
+    delta = pd.read_csv(results / "baseline_section_delta.tsv", sep="\t")
+    assert {"delta_z", "best_non_model_strategy", "dbfree_enrichment_z"}.issubset(delta.columns)
+    delta_summary = pd.read_csv(results / "baseline_section_delta_summary.tsv", sep="\t")
+    assert {"median_delta_z", "bootstrap_ci_low", "bootstrap_ci_high"}.issubset(delta_summary.columns)
     for ext in ("png", "svg", "pdf"):
         assert figure_prefix.with_suffix(f".{ext}").exists()
     assert figure_prefix.with_name("dbfree_spatial_validation_main_legend.md").exists()
@@ -293,6 +301,45 @@ def test_acceptance_reproducibility_design_gates(tmp_path):
         ]
     )
     topk.to_csv(results_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        [
+            {
+                "dataset": "toy_complete",
+                "species": "Toy species",
+                "section_id": "S1",
+                "kernel": "exp",
+                "score_type": "model_weighted_spatial_ccc_score",
+                "null_model": "matched_random_lr",
+                "k": 500,
+                "top_k": 500,
+                "dbfree_enrichment_z": 5.0,
+                "best_non_model_strategy": "role_only",
+                "best_non_model_enrichment_z": 2.0,
+                "delta_z": 3.0,
+            }
+        ]
+    ).to_csv(tmp_path / "results" / "baseline_section_delta.tsv", sep="\t", index=False)
+    pd.DataFrame(
+        [
+            {
+                "dataset": "toy_complete",
+                "species": "Toy species",
+                "kernel": "exp",
+                "score_type": "model_weighted_spatial_ccc_score",
+                "null_model": "matched_random_lr",
+                "k": 500,
+                "top_k": 500,
+                "n_sections": 1,
+                "median_delta_z": 3.0,
+                "mean_delta_z": 3.0,
+                "bootstrap_ci_low": 3.0,
+                "bootstrap_ci_high": 3.0,
+                "fraction_positive_delta_z": 1.0,
+                "random_seed": 0,
+                "bootstrap_iterations": 10000,
+            }
+        ]
+    ).to_csv(tmp_path / "results" / "baseline_section_delta_summary.tsv", sep="\t", index=False)
     (tmp_path / "results" / "baseline_comparison.tsv").write_text("placeholder\n", encoding="utf-8")
     (tmp_path / "results" / "baseline_topk_enrichment.tsv").write_text("placeholder\n", encoding="utf-8")
     legend = (
@@ -312,6 +359,8 @@ def test_acceptance_reproducibility_design_gates(tmp_path):
         for relative in (
             "baseline_comparison.tsv",
             "baseline_topk_enrichment.tsv",
+            "baseline_section_delta.tsv",
+            "baseline_section_delta_summary.tsv",
             "toy_complete/spatial_validation_summary.tsv",
             "toy_complete/spatial_validation_top_k_enrichment.tsv",
             "toy_complete/spatial_validation_distance_decay.tsv",
@@ -329,6 +378,29 @@ def test_acceptance_reproducibility_design_gates(tmp_path):
     assert global_rows["main_figure_outputs_exist"]["passed"]
     assert global_rows["main_figure_legend_complete"]["passed"]
     assert global_rows["source_tables_tarball_complete"]["passed"]
+    assert global_rows["baseline_tables_exist"]["passed"]
+    assert global_rows["paired_section_delta_summary_complete"]["passed"]
+
+
+def test_baseline_section_delta_skips_nan_baselines():
+    runner = _load_script("run_dbfree_spatial_validation")
+    topk = pd.DataFrame(
+        [
+            _design_topk_row(kernel="exp", null_model="matched_random_lr", strategy="dbfree", k=500),
+            {
+                **_design_topk_row(kernel="exp", null_model="matched_random_lr", strategy="role_only", k=500),
+                "top_k_enrichment_z": np.nan,
+                "enrichment_z": np.nan,
+            },
+            _design_topk_row(kernel="contact", null_model="matched_random_lr", strategy="dbfree", k=500),
+            _design_topk_row(kernel="contact", null_model="matched_random_lr", strategy="role_only", k=500),
+        ]
+    )
+    delta = runner._baseline_section_delta(topk)
+    assert not delta.empty
+    assert set(delta["kernel"]) == {"contact"}
+    summary = runner._baseline_section_delta_summary(delta)
+    assert summary["median_delta_z"].notna().all()
 
 
 def _topk_row(section: str, *, strategy: str, z: float, p: float, k: int) -> dict[str, object]:
@@ -360,18 +432,29 @@ def _download_row(dataset: str, section_id: str, asset_type: str) -> dict[str, o
 
 def _design_topk_row(*, kernel: str, null_model: str, strategy: str, k: int) -> dict[str, object]:
     return {
+        "dataset": "toy_complete",
+        "species": "Toy species",
+        "section_id": "S1",
+        "technology": "toy spatial",
+        "n_cells_or_bins": 10,
+        "n_groups": 2,
+        "n_lr_pairs_in_table": 10,
         "kernel": kernel,
         "score_type": "model_weighted_spatial_ccc_score",
         "null_model": null_model,
         "k": k,
+        "top_k": k,
         "validation_strategy": strategy,
         "n_permutations": 1000,
         "random_seed": 0,
         "observed_mean": 1.0,
+        "observed_score": 1.0,
         "null_mean": 0.5,
         "null_sd": 0.1,
         "top_k_enrichment_z": 5.0,
         "top_k_empirical_pvalue": 0.001,
+        "enrichment_z": 5.0,
+        "empirical_p": 0.001,
     }
 
 

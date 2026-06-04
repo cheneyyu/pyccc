@@ -27,7 +27,59 @@ REQUIRED_SPATIAL_OUTPUTS = (
     "spatial_validation_section_reproducibility.tsv",
 )
 REQUIRED_VALIDATION_STRATEGIES = {"dbfree", "role_only", "embedding_cosine", "expression_only"}
+REQUIRED_DISTANCE_DECAY_STRATEGIES = {"dbfree", "matched_random_lr", "score_permutation"}
 REQUIRED_DOWNLOAD_COLUMNS = {"asset_type", "dataset", "section_id", "source_url", "local_path", "actual_bytes", "sha256", "status", "downloaded_at"}
+REQUIRED_TOPK_REPORTING_COLUMNS = {
+    "dataset",
+    "species",
+    "section_id",
+    "technology",
+    "n_cells_or_bins",
+    "n_groups",
+    "n_lr_pairs_in_table",
+    "top_k",
+    "kernel",
+    "score_type",
+    "observed_score",
+    "null_model",
+    "null_mean",
+    "null_sd",
+    "enrichment_z",
+    "empirical_p",
+    "random_seed",
+    "n_permutations",
+}
+REQUIRED_SECTION_DELTA_COLUMNS = {
+    "dataset",
+    "species",
+    "section_id",
+    "kernel",
+    "score_type",
+    "null_model",
+    "k",
+    "top_k",
+    "dbfree_enrichment_z",
+    "best_non_model_strategy",
+    "best_non_model_enrichment_z",
+    "delta_z",
+}
+REQUIRED_SECTION_DELTA_SUMMARY_COLUMNS = {
+    "dataset",
+    "species",
+    "kernel",
+    "score_type",
+    "null_model",
+    "k",
+    "top_k",
+    "n_sections",
+    "median_delta_z",
+    "mean_delta_z",
+    "bootstrap_ci_low",
+    "bootstrap_ci_high",
+    "fraction_positive_delta_z",
+    "random_seed",
+    "bootstrap_iterations",
+}
 REQUIRED_LEGEND_PHRASES = (
     "computational candidates",
     "plausibility evidence",
@@ -90,6 +142,7 @@ def _dataset_rows(manifest: dict[str, object], results_dir: Path) -> list[dict[s
     rows.append(_model_warning_gate(dataset, results_dir))
     rows.append(_spatial_output_files_gate(dataset, results_dir))
     rows.append(_spatial_design_gate(manifest, results_dir))
+    rows.append(_distance_decay_design_gate(dataset, results_dir))
     if dataset == "artista_axolotl":
         rows.append(_artista_spatial_gate(dataset, results_dir))
     elif dataset == "sota_soybean":
@@ -470,7 +523,21 @@ def _spatial_design_gate(manifest: dict[str, object], results_dir: Path) -> dict
     if topk.empty:
         return _gate(dataset, "spatial", "topk_design_complete", False, str(results_dir / "spatial_validation_top_k_enrichment.tsv"))
     spatial_cfg = dict(manifest.get("spatial_validation", {}))
-    required_columns = {"kernel", "score_type", "null_model", "k", "validation_strategy", "n_permutations", "random_seed", "observed_mean", "null_mean", "null_sd", "top_k_enrichment_z", "top_k_empirical_pvalue"}
+    required_columns = {
+        "kernel",
+        "score_type",
+        "null_model",
+        "k",
+        "validation_strategy",
+        "n_permutations",
+        "random_seed",
+        "observed_mean",
+        "null_mean",
+        "null_sd",
+        "top_k_enrichment_z",
+        "top_k_empirical_pvalue",
+        *REQUIRED_TOPK_REPORTING_COLUMNS,
+    }
     missing_columns = sorted(required_columns - set(topk.columns))
     kernels = set(topk.get("kernel", pd.Series(dtype=str)).astype(str))
     nulls = set(topk.get("null_model", pd.Series(dtype=str)).astype(str))
@@ -499,6 +566,21 @@ def _spatial_design_gate(manifest: dict[str, object], results_dir: Path) -> dict
 def _generic_spatial_gate(dataset: str, results_dir: Path) -> dict[str, object]:
     topk = _topk(results_dir)
     return _gate(dataset, "spatial", "topk_table_exists", not topk.empty, str(results_dir / "spatial_validation_top_k_enrichment.tsv"))
+
+
+def _distance_decay_design_gate(dataset: str, results_dir: Path) -> dict[str, object]:
+    path = results_dir / "spatial_validation_distance_decay.tsv"
+    if not path.exists():
+        return _gate(dataset, "spatial", "distance_decay_controls_present", False, str(path))
+    try:
+        decay = pd.read_csv(path, sep="\t")
+    except pd.errors.EmptyDataError:
+        return _gate(dataset, "spatial", "distance_decay_controls_present", False, "empty table")
+    if decay.empty or "validation_strategy" not in decay:
+        return _gate(dataset, "spatial", "distance_decay_controls_present", False, "missing validation_strategy")
+    strategies = set(decay["validation_strategy"].fillna("").astype(str))
+    missing = sorted(REQUIRED_DISTANCE_DECAY_STRATEGIES - strategies)
+    return _gate(dataset, "spatial", "distance_decay_controls_present", not missing, "missing=" + ",".join(missing))
 
 
 def _topk(results_dir: Path) -> pd.DataFrame:
@@ -534,7 +616,8 @@ def _global_rows(results_root: Path, figures_dir: Path) -> list[dict[str, object
         _gate("global", "figure", "main_figure_outputs_exist", all((figures_dir / name).exists() for name in required), str(figures_dir)),
         _figure_legend_gate(figures_dir),
         _source_tarball_gate(results_root, figures_dir),
-        _gate("global", "reproducibility", "baseline_tables_exist", (results_root / "baseline_comparison.tsv").exists() and (results_root / "baseline_topk_enrichment.tsv").exists(), str(results_root)),
+        _baseline_tables_gate(results_root),
+        _section_delta_summary_gate(results_root),
     ]
 
 
@@ -556,7 +639,12 @@ def _source_tarball_gate(results_root: Path, figures_dir: Path) -> dict[str, obj
             names = set(archive.getnames())
     except tarfile.TarError as exc:
         return _gate("global", "reproducibility", "source_tables_tarball_complete", False, str(exc))
-    required = {"baseline_comparison.tsv", "baseline_topk_enrichment.tsv"}
+    required = {
+        "baseline_comparison.tsv",
+        "baseline_topk_enrichment.tsv",
+        "baseline_section_delta.tsv",
+        "baseline_section_delta_summary.tsv",
+    }
     for dataset_dir in _dataset_result_dirs(results_root):
         dataset = dataset_dir.name
         required.update(
@@ -569,6 +657,37 @@ def _source_tarball_gate(results_root: Path, figures_dir: Path) -> dict[str, obj
         )
     missing = sorted(required - names)
     return _gate("global", "reproducibility", "source_tables_tarball_complete", not missing, "missing=" + ",".join(missing))
+
+
+def _baseline_tables_gate(results_root: Path) -> dict[str, object]:
+    required = (
+        "baseline_comparison.tsv",
+        "baseline_topk_enrichment.tsv",
+        "baseline_section_delta.tsv",
+        "baseline_section_delta_summary.tsv",
+    )
+    missing = [name for name in required if not (results_root / name).exists()]
+    return _gate("global", "reproducibility", "baseline_tables_exist", not missing, "missing=" + ",".join(missing))
+
+
+def _section_delta_summary_gate(results_root: Path) -> dict[str, object]:
+    delta_path = results_root / "baseline_section_delta.tsv"
+    summary_path = results_root / "baseline_section_delta_summary.tsv"
+    if not delta_path.exists() or not summary_path.exists():
+        return _gate("global", "reproducibility", "paired_section_delta_summary_complete", False, f"{delta_path}; {summary_path}")
+    try:
+        delta = pd.read_csv(delta_path, sep="\t")
+        summary = pd.read_csv(summary_path, sep="\t")
+    except pd.errors.EmptyDataError as exc:
+        return _gate("global", "reproducibility", "paired_section_delta_summary_complete", False, str(exc))
+    missing_delta = sorted(REQUIRED_SECTION_DELTA_COLUMNS - set(delta.columns))
+    missing_summary = sorted(REQUIRED_SECTION_DELTA_SUMMARY_COLUMNS - set(summary.columns))
+    passed = not delta.empty and not summary.empty and not missing_delta and not missing_summary
+    evidence = (
+        f"delta_rows={len(delta)}; summary_rows={len(summary)}; "
+        f"missing_delta={','.join(missing_delta)}; missing_summary={','.join(missing_summary)}"
+    )
+    return _gate("global", "reproducibility", "paired_section_delta_summary_complete", passed, evidence)
 
 
 def _dataset_result_dirs(results_root: Path) -> list[Path]:

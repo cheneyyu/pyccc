@@ -167,7 +167,7 @@ def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
     if "section_id" in frame.columns and "30DPI" in set(frame["section_id"].astype(str)):
         frame = frame[frame["section_id"].astype(str) == "30DPI"].copy()
     if "validation_strategy" in frame.columns:
-        keep = ["dbfree", "role_only", "embedding_cosine"]
+        keep = ["dbfree", "matched_random_lr", "score_permutation"]
         focused = frame[frame["validation_strategy"].astype(str).isin(keep)].copy()
         if not focused.empty:
             frame = focused
@@ -176,7 +176,7 @@ def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
         _empty(ax, "No distance-decay score")
         return
     frame["distance_mid"] = (pd.to_numeric(frame["distance_min"], errors="coerce") + pd.to_numeric(frame["distance_max"], errors="coerce")) / 2.0
-    strategy_order = ["dbfree", "role_only", "embedding_cosine", "expression_only"]
+    strategy_order = ["dbfree", "matched_random_lr", "score_permutation", "role_only", "embedding_cosine", "expression_only"]
     strategies = [item for item in strategy_order if item in set(frame["validation_strategy"].astype(str))]
     strategies.extend(sorted(set(frame["validation_strategy"].astype(str)) - set(strategies)))
     for strategy in strategies:
@@ -184,7 +184,7 @@ def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
         grouped = sub.groupby("distance_mid", as_index=False)[score_col].mean()
         far = float(grouped.sort_values("distance_mid")[score_col].iloc[-1])
         values = grouped[score_col].to_numpy(dtype=float) / far if far > 0 else grouped[score_col].to_numpy(dtype=float)
-        ax.plot(grouped["distance_mid"], values, marker="o", label=strategy)
+        ax.plot(grouped["distance_mid"], values, marker="o", label=_strategy_label(strategy))
     ax.set_xlabel("Distance bin midpoint")
     ax.set_ylabel("Weighted CCC / far bin")
     ax.legend(frameon=False, fontsize=8)
@@ -323,7 +323,7 @@ def _panel_comparison(ax, comparison: pd.DataFrame) -> None:
         _empty(ax, "No exp comparison rows")
         return
     grouped = frame.groupby("validation_strategy", as_index=False)["enrichment_z"].mean().sort_values("enrichment_z")
-    ax.barh(grouped["validation_strategy"], grouped["enrichment_z"], color="#4c78a8")
+    ax.barh([_strategy_label(item) for item in grouped["validation_strategy"]], grouped["enrichment_z"], color="#4c78a8")
     ax.axvline(0, color="#999", lw=0.8)
     ax.set_xlabel("Mean enrichment z-score")
 
@@ -339,6 +339,18 @@ def _prefer_matched_random_topk(frame: pd.DataFrame) -> pd.DataFrame:
     return matched if not matched.empty else frame
 
 
+def _strategy_label(value: object) -> str:
+    labels = {
+        "dbfree": "DB-free",
+        "role_only": "role-only",
+        "embedding_cosine": "ESMC cosine",
+        "expression_only": "expression-only",
+        "matched_random_lr": "matched random",
+        "score_permutation": "score-shuffled",
+    }
+    return labels.get(str(value), str(value))
+
+
 def _write_legend(path: Path, topk: pd.DataFrame, summary: pd.DataFrame) -> None:
     n_sections = int(topk[["dataset", "section_id"]].drop_duplicates().shape[0]) if not topk.empty else 0
     n_pairs = int(summary[["ligand", "receptor"]].drop_duplicates().shape[0]) if not summary.empty and {"ligand", "receptor"}.issubset(summary.columns) else 0
@@ -352,7 +364,8 @@ def _write_legend(path: Path, topk: pd.DataFrame, summary: pd.DataFrame) -> None
         "Predicted LR edges are computational candidates, not experimentally validated biochemical interactions. "
         "Spatial validation is plausibility evidence based on contact and diffusion-style kernels with coordinate, "
         "cell-type, matched-random-LR, and score-permutation null models. "
-        "Top-K enrichment panels use matched-random-LR null rows when available.\n\n"
+        "Top-K enrichment panels use matched-random-LR null rows when available. "
+        "The distance-decay panel contrasts DB-free predicted pairs with matched-random and score-shuffled controls.\n\n"
         f"Source tables currently include {n_sections} section-level validation units, {n_cells} cell/bin records across plotted summaries, "
         f"up to {n_groups} groups per section, {n_pairs} unique LR pairs, {n_permutations} permutations, and null models: {null_models}.\n",
         encoding="utf-8",

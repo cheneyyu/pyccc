@@ -168,6 +168,9 @@ diagnostic source tables are needed. Set
 when those large intermediate tables are explicitly needed for audit.
 `spatial_weight_max_cells` controls the stratified cell/bin sample used for
 the repeated spatial kernel reductions in final top-K validation.
+Distance-decay output always includes DB-free rows plus matched-random and
+score-permutation control rows when those null models are configured, so the
+Panel C source table does not depend on notebook-only resampling.
 
 ## Outputs
 
@@ -187,6 +190,8 @@ The pipeline writes:
 - `results/dbfree_validation/*/spatial_validation_section_reproducibility.tsv`
 - `results/dbfree_validation/baseline_comparison.tsv`
 - `results/dbfree_validation/baseline_topk_enrichment.tsv`
+- `results/dbfree_validation/baseline_section_delta.tsv`
+- `results/dbfree_validation/baseline_section_delta_summary.tsv`
 - `figures/dbfree_spatial_validation_main.png`
 - `figures/dbfree_spatial_validation_main.svg`
 - `figures/dbfree_spatial_validation_main.pdf`
@@ -203,6 +208,18 @@ report have a stable schema.
 `spatial_validation_top_k_enrichment.tsv` includes a `null_model` column.
 Rows are written for each individual null model plus a `pooled` summary. The
 main figure and acceptance gates use `matched_random_lr` rows when available.
+For compatibility with the main statistical endpoint, the table keeps legacy
+columns such as `k`, `observed_mean`, `top_k_enrichment_z`, and
+`top_k_empirical_pvalue`, and also writes the goal-level aliases `top_k`,
+`observed_score`, `enrichment_z`, and `empirical_p`.
+
+`baseline_section_delta.tsv` reports paired section-level effect sizes:
+`delta_z = z(DB-free) - z(best non-model baseline)`, where the non-model
+baseline is the best available row among role-only, ESMC-cosine, and
+expression-only rankings for the same dataset, section, kernel, score type,
+null model, and top-K threshold. `baseline_section_delta_summary.tsv` reports
+the median delta z-score, mean delta z-score, fraction of positive sections,
+and a bootstrap confidence interval across sections.
 
 Final figure tables must not contain fixture warnings such as
 `hash_embedding_backend`, `heuristic_role_model`, `heuristic_pair_ranker`, or
@@ -230,6 +247,13 @@ distance kernels, all configured null models, top-K thresholds, and the four
 main ranking strategies: DB-free, role-only, embedding-cosine, and
 expression-only. For the committed ARTISTA/SOTA manifests, final rows must use
 at least 1000 permutations.
+
+The checker requires top-K rows to carry the full plotted-result reporting
+schema: dataset, species, section, technology, cell/bin count, group count,
+LR-pair count, top-K, kernel, score type, observed score, null summary,
+enrichment z-score, empirical p-value, seed, and permutation count. It also
+requires distance-decay rows for DB-free, matched-random, and score-shuffled
+controls, plus paired section-level delta summaries with bootstrap intervals.
 
 `validation_model_card.tsv` must include non-empty embedding model name and
 revision, resolved role and pair model paths, model and density-prior

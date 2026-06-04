@@ -700,12 +700,16 @@ def _top_k_enrichment(summary: pd.DataFrame, null: pd.DataFrame, *, top_k_values
         "score_type",
         "null_model",
         "k",
+        "top_k",
         "n_pairs",
         "observed_mean",
+        "observed_score",
         "null_mean",
         "null_sd",
         "top_k_enrichment_z",
         "top_k_empirical_pvalue",
+        "enrichment_z",
+        "empirical_p",
     ]
     if summary.empty:
         return pd.DataFrame(columns=columns)
@@ -731,12 +735,16 @@ def _top_k_enrichment(summary: pd.DataFrame, null: pd.DataFrame, *, top_k_values
                             "score_type": score_col,
                             "null_model": str(null_model),
                             "k": int(k),
+                            "top_k": int(k),
                             "n_pairs": int(kk),
                             "observed_mean": observed,
+                            "observed_score": observed,
                             "null_mean": null_mean,
                             "null_sd": null_sd,
                             "top_k_enrichment_z": float(z),
                             "top_k_empirical_pvalue": pvalue,
+                            "enrichment_z": float(z),
+                            "empirical_p": pvalue,
                         }
                     )
     return pd.DataFrame(rows, columns=columns)
