@@ -206,6 +206,7 @@ def _load_or_predict_lr(
         model=str(pair_model),
         density_prior=cfg.get("density_prior", "auto"),
         embedding_model_name=str(cfg.get("embedding_model", pc.ESMC_300M_MODEL_NAME)),
+        embedding_model_revision=_prediction_embedding_revision(cfg),
         expression_min_fraction=float(cfg.get("expression_min_fraction", 0.01)),
         ligand_role_min=float(cfg.get("ligand_role_min", 0.2)),
         receptor_role_min=float(cfg.get("receptor_role_min", 0.2)),
@@ -261,6 +262,7 @@ def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) ->
         {
             "dataset": manifest["name"],
             "embedding_model_name": cfg.get("embedding_model", pc.ESMC_300M_MODEL_NAME),
+            "embedding_model_revision": _prediction_embedding_revision(cfg, role_card=role_card, pair_card=pair_card),
             "role_model_manifest": role_manifest,
             "role_model_path": _model_path_string(role_path),
             "role_model_checksum16": _checksum_model_file(role_path, "role_model.joblib"),
@@ -291,6 +293,24 @@ def _write_model_card_summary(manifest: dict[str, object], results_dir: Path) ->
         }
     ]
     write_tsv(pd.DataFrame(rows), results_dir / "validation_model_card.tsv")
+
+
+def _prediction_embedding_revision(
+    cfg: dict[str, object],
+    *,
+    role_card: dict[str, object] | None = None,
+    pair_card: dict[str, object] | None = None,
+) -> str | None:
+    for key in ("embedding_revision", "embedding_model_revision"):
+        value = cfg.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    for card in (pair_card, role_card):
+        if isinstance(card, dict):
+            value = _embedding_card_value(card, "model_revision")
+            if str(value).strip():
+                return str(value)
+    return None
 
 
 def _resolve_optional_model_dir(value: object, *, expected_file: str) -> Path | None:

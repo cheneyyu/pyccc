@@ -91,7 +91,10 @@ directory names such as `animal_esmc300m_lgbm_pair_ranker_v0` or
 `universal_esmc300m_lgbm_pair_ranker_v0`. The validation runner and acceptance
 checker resolve those names through `pyccc.model_resources`, so the same
 manifests work from a source checkout or a pip-from-git install. Pass explicit
-filesystem paths only when replacing the bundled models.
+filesystem paths only when replacing the bundled models. `prediction` also
+records the ESMC model name and revision used at inference time; the committed
+manifests use `embedding_model = biohub/esmc-300m-2024-12` and
+`embedding_revision = main`.
 
 ## Reproduce
 
@@ -227,6 +230,11 @@ distance kernels, all configured null models, top-K thresholds, and the four
 main ranking strategies: DB-free, role-only, embedding-cosine, and
 expression-only. For the committed ARTISTA/SOTA manifests, final rows must use
 at least 1000 permutations.
+
+`validation_model_card.tsv` must include non-empty embedding model name and
+revision, resolved role and pair model paths, model and density-prior
+checksums, training resources, species/clades included in training, validation
+split summary, and negative sampling strategy.
 
 `check_dbfree_validation_acceptance.py` exits non-zero until all required
 data, sequence, model, spatial, figure, and reproducibility gates pass. This is

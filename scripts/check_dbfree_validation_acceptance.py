@@ -37,6 +37,21 @@ REQUIRED_LEGEND_PHRASES = (
     "groups",
     "lr pairs",
 )
+REQUIRED_MODEL_CARD_SUMMARY_COLUMNS = (
+    "embedding_model_name",
+    "embedding_model_revision",
+    "role_model_path",
+    "role_model_checksum16",
+    "pair_model_path",
+    "pair_model_checksum16",
+    "density_prior_path",
+    "density_prior_checksum16",
+    "training_resources",
+    "species_included",
+    "clades_included",
+    "validation_split_summary",
+    "negative_sampling_strategy",
+)
 
 
 def main() -> None:
@@ -239,8 +254,18 @@ def _model_artifact_gates(manifest: dict[str, object], results_dir: Path) -> lis
                 _summary_checksum_evidence(summary),
             )
         )
+        rows.append(
+            _gate(
+                dataset,
+                "model",
+                "validation_model_card_summary_complete",
+                _summary_model_card_complete(summary),
+                _summary_model_card_evidence(summary),
+            )
+        )
     else:
         rows.append(_gate(dataset, "model", "validation_model_card_has_checksums", False, str(results_dir / "validation_model_card.tsv")))
+        rows.append(_gate(dataset, "model", "validation_model_card_summary_complete", False, str(results_dir / "validation_model_card.tsv")))
     return rows
 
 
@@ -340,6 +365,25 @@ def _density_has_clade(density: pd.DataFrame | None, clade: str) -> bool:
 def _summary_checksums_present(summary: pd.DataFrame) -> bool:
     required = ("role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16")
     return all(col in summary and summary[col].fillna("").astype(str).str.len().gt(0).all() for col in required)
+
+
+def _summary_model_card_complete(summary: pd.DataFrame) -> bool:
+    if summary.empty:
+        return False
+    missing = [col for col in REQUIRED_MODEL_CARD_SUMMARY_COLUMNS if col not in summary]
+    if missing:
+        return False
+    return all(summary[col].fillna("").astype(str).str.len().gt(0).all() for col in REQUIRED_MODEL_CARD_SUMMARY_COLUMNS)
+
+
+def _summary_model_card_evidence(summary: pd.DataFrame) -> str:
+    missing = [col for col in REQUIRED_MODEL_CARD_SUMMARY_COLUMNS if col not in summary]
+    empty = [
+        col
+        for col in REQUIRED_MODEL_CARD_SUMMARY_COLUMNS
+        if col in summary and not summary[col].fillna("").astype(str).str.len().gt(0).all()
+    ]
+    return "missing=" + ",".join(missing) + "; empty=" + ",".join(empty)
 
 
 def _summary_checksum_evidence(summary: pd.DataFrame) -> str:

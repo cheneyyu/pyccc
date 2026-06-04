@@ -60,6 +60,7 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
                     "pair_model": "universal_esmc300m_lgbm_pair_ranker_v0",
                     "density_prior": "auto",
                     "embedding_model": "biohub/esmc-300m-2024-12",
+                    "embedding_revision": "main",
                 },
                 "sections": [
                     {
@@ -191,7 +192,8 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert normalized_fasta.exists()
     assert "gene=L1" in normalized_fasta.read_text(encoding="utf-8")
     model_summary = pd.read_csv(dataset_dir / "validation_model_card.tsv", sep="\t")
-    assert {"role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16", "training_resources", "clades_included"}.issubset(model_summary.columns)
+    assert {"embedding_model_revision", "role_model_checksum16", "pair_model_checksum16", "density_prior_checksum16", "training_resources", "clades_included"}.issubset(model_summary.columns)
+    assert model_summary["embedding_model_revision"].iloc[0] == "main"
     assert model_summary["role_model_manifest"].iloc[0] == "universal_esmc300m_lgbm_role_classifiers_v0"
     assert model_summary["pair_model_manifest"].iloc[0] == "universal_esmc300m_lgbm_pair_ranker_v0"
     assert model_summary["role_model_path"].str.contains("src/pyccc/models/universal_esmc300m_lgbm_role_classifiers_v0", regex=False).all()
@@ -213,6 +215,7 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
     assert model_gate_status.loc["role_model_file_exists"]
     assert model_gate_status.loc["pair_model_file_exists"]
     assert model_gate_status.loc["density_prior_table_exists"]
+    assert model_gate_status.loc["validation_model_card_summary_complete"]
     assert not model_gate_status.loc["density_prior_has_manifest_clade"]
 
 

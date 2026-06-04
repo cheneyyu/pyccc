@@ -95,6 +95,7 @@
     "pair_model": "animal_esmc300m_lgbm_pair_ranker_v0",
     "density_prior": "auto",
     "embedding_model": "biohub/esmc-300m-2024-12",
+    "embedding_revision": "main",
     "expression_min_fraction": 0.01,
     "ligand_role_min": 0.20,
     "receptor_role_min": 0.20,
