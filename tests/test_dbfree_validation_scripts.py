@@ -109,6 +109,40 @@ def test_dbfree_validation_scripts_smoke(tmp_path):
         "--baseline",
         "role_only",
     )
+    full_topk = pd.read_csv(dataset_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t")
+    _run(
+        "scripts/run_dbfree_spatial_validation.py",
+        "--manifest",
+        manifest,
+        "--results-dir",
+        results,
+        "--smoke-only",
+        "--n-permutations",
+        "2",
+        "--top-k-only",
+        "--baseline",
+        "dbfree",
+        "--baseline",
+        "role_only",
+    )
+    topk = pd.read_csv(dataset_dir / "spatial_validation_top_k_enrichment.tsv", sep="\t")
+    assert topk["top_k_enrichment_z"].notna().any()
+    assert set(topk["null_model"].astype(str)).issuperset({"matched_random_lr", "score_permutation"})
+    compare_cols = [
+        "validation_strategy",
+        "kernel",
+        "score_type",
+        "null_model",
+        "k",
+        "observed_mean",
+        "null_mean",
+        "null_sd",
+        "top_k_enrichment_z",
+        "top_k_empirical_pvalue",
+    ]
+    full_cmp = full_topk[compare_cols].sort_values(compare_cols[:5]).reset_index(drop=True)
+    fast_cmp = topk[compare_cols].sort_values(compare_cols[:5]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(fast_cmp, full_cmp, check_dtype=False, atol=1e-12, rtol=1e-12)
     topk_before = (dataset_dir / "spatial_validation_top_k_enrichment.tsv").read_text(encoding="utf-8")
     _run(
         "scripts/run_dbfree_spatial_validation.py",

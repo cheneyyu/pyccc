@@ -70,6 +70,30 @@ uv run python examples/three_way_runtime_benchmark.py \
   --timeout-seconds 600
 ```
 
+## DB-free Target-Species Validation
+
+`pyccc` also includes an experimental DB-free workflow for species where a
+curated target-species ligand-receptor database is absent or incomplete. The
+production stack is:
+
+```text
+ESMC-300M embedding -> LightGBM protein role classifiers -> LightGBM pair ranker -> clade-aware density prior
+```
+
+The repository contains a reproducible real-data validation workflow for
+ARTISTA axolotl Stereo-seq and SOTA soybean Stereo-seq sections. It runs
+top-K spatial enrichment against coordinate, cell-type, matched-random LR, and
+score-permutation null models with 1000 permutations for final figures.
+
+Current validation artifacts are documented in
+[`docs/dbfree_validation.md`](docs/dbfree_validation.md), with a manuscript-style
+figure at [`docs/figures/dbfree_spatial_validation_main.png`](docs/figures/dbfree_spatial_validation_main.png)
+and a compact primary result table at
+[`docs/paper/results/dbfree_spatial_validation_primary.tsv`](docs/paper/results/dbfree_spatial_validation_primary.tsv).
+The result should be interpreted conservatively: predicted LR edges are
+computational candidates, and spatial enrichment is plausibility evidence, not
+biochemical validation.
+
 ## Install
 
 Install directly from GitHub:
@@ -304,7 +328,7 @@ For downloaded CSV/TSV/Parquet LR tables, pyccc accepts `ligand`/`receptor`
 columns and common OmniPath-style aliases such as `source_genesymbol` and
 `target_genesymbol`.
 
-Experimental DB-free target-species CCC:
+Experimental DB-free target-species CCC API:
 
 ```python
 predicted_db = pc.predict_lr_dbfree(
@@ -328,8 +352,6 @@ res = pc.compute_communication(
 )
 ```
 
-The production DB-free stack is explicitly `ESMC-300M embedding -> LightGBM
-protein role classifiers -> LightGBM pair ranker -> clade-aware density prior`.
 The universal LightGBM role and pair models are bundled with the Python package,
 so `predict_lr_dbfree(...)` works after a normal `pyccc[predict]` install unless
 you pass custom `role_model` or `model` paths. Hash embeddings, heuristic
@@ -337,8 +359,9 @@ role/ranker models, and scalar density priors are fixture paths for tests or dry
 runs only.
 
 See `docs/lr_resources.md`, `docs/lr_resource_training.md`,
-`docs/dbfree_ccc.md`, and `docs/spatial_validation.md` for the experimental
-predictor workflow and limitations.
+`docs/dbfree_ccc.md`, `docs/dbfree_validation.md`, and
+`docs/spatial_validation.md` for the experimental predictor workflow,
+real-data validation, and limitations.
 
 Run the official CellChat human skin vignette data through pyccc plotnine
 figures:

@@ -9,11 +9,56 @@ The conservative claim is:
 
 > DB-free LR candidates from ESMC-300M embedding, LightGBM protein role
 > classifiers, a LightGBM pair ranker, and a clade-aware density prior are
-> spatially more enriched than matched-random, score-shuffled, role-only,
-> embedding-only, and expression-only controls.
+> spatially enriched against matched-random, coordinate, cell-type, and
+> score-permutation null models in non-standard species where a curated
+> target-species LR database is not used.
 
 Predicted LR edges are computational candidates, not validated biochemical
 binding events.
+
+## Current Real-Data Snapshot
+
+The current manuscript figure was generated from ARTISTA axolotl
+`Control_Juv`, `5DPI_1`, and `30DPI` sections plus SOTA soybean `SAM` and
+`Leaf` sections. Final top-K enrichment uses `exp` kernel,
+`model_weighted_spatial_ccc_score`, `matched_random_lr` null rows, random seed
+0, and 1000 permutations.
+
+![DB-free spatial validation main figure](figures/dbfree_spatial_validation_main.png)
+
+Compact primary source rows are committed in
+`docs/paper/results/dbfree_spatial_validation_primary.tsv`. The full generated
+tables are intentionally kept under ignored `results/dbfree_validation/`
+because they are large and reproducible from the manifests and scripts.
+
+ARTISTA passes the main spatial gate in all three required sections:
+
+| Section | Top-K | Enrichment z | Empirical p |
+| --- | ---: | ---: | ---: |
+| Control_Juv | 500 | 8.80 | 0.000999 |
+| Control_Juv | 1000 | 5.53 | 0.000999 |
+| 5DPI_1 | 500 | 8.42 | 0.000999 |
+| 5DPI_1 | 1000 | 4.55 | 0.000999 |
+| 30DPI | 500 | 7.10 | 0.000999 |
+| 30DPI | 1000 | 4.30 | 0.001998 |
+
+SOTA is framed as cross-kingdom feasibility. `SAM` is positive, while `Leaf`
+is a negative section under the same gate:
+
+| Section | Top-K | Enrichment z | Empirical p |
+| --- | ---: | ---: | ---: |
+| SAM | 500 | 7.54 | 0.000999 |
+| SAM | 1000 | 9.03 | 0.000999 |
+| Leaf | 500 | -2.12 | 0.994006 |
+| Leaf | 1000 | -2.75 | 0.999001 |
+
+Expression-only ranking is included as a deliberately strong non-sequence
+baseline and can be highly spatially enriched because it favors broadly
+co-expressed genes. The DB-free claim should therefore not be overstated as
+biochemical validation or as dominance over every expression-driven baseline.
+The supported claim is that target-species DB-free candidate LR tables are
+spatially plausible against controlled nulls and outperform sequence-only and
+role-only controls in the ARTISTA primary analysis.
 
 ## Data Sources
 
@@ -44,25 +89,55 @@ ESMC-300M embedding of proteins that cannot enter the CCC analysis.
 
 ## Reproduce
 
-Run the same four scripts for each manifest:
+Install the prediction-capable environment first:
+
+```bash
+git clone https://github.com/cheneyyu/pyccc.git
+cd pyccc
+uv sync --extra dev --extra docs --extra predict
+```
+
+Run the data and proteome preparation scripts for each manifest:
 
 ```bash
 uv run python scripts/download_dbfree_validation_data.py \
   --manifest configs/dbfree_validation/artista_axolotl.yaml \
-  --include-proteome \
-  --smoke-only
+  --include-proteome
 
 uv run python scripts/prepare_dbfree_validation_data.py \
-  --manifest configs/dbfree_validation/artista_axolotl.yaml \
-  --smoke-only
+  --manifest configs/dbfree_validation/artista_axolotl.yaml
 
 uv run python scripts/prepare_target_proteome.py \
   --manifest configs/dbfree_validation/artista_axolotl.yaml
 
+uv run python scripts/download_dbfree_validation_data.py \
+  --manifest configs/dbfree_validation/sota_soybean.yaml \
+  --include-proteome
+
+uv run python scripts/prepare_dbfree_validation_data.py \
+  --manifest configs/dbfree_validation/sota_soybean.yaml
+
+uv run python scripts/prepare_target_proteome.py \
+  --manifest configs/dbfree_validation/sota_soybean.yaml
+```
+
+Run final top-K spatial validation with the memory-light top-K path:
+
+```bash
 uv run python scripts/run_dbfree_spatial_validation.py \
   --manifest configs/dbfree_validation/artista_axolotl.yaml \
-  --smoke-only \
-  --n-permutations 100
+  --section Control_Juv \
+  --section 5DPI_1 \
+  --section 30DPI \
+  --n-permutations 1000 \
+  --top-k-only
+
+uv run python scripts/run_dbfree_spatial_validation.py \
+  --manifest configs/dbfree_validation/sota_soybean.yaml \
+  --section SAM \
+  --section Leaf \
+  --n-permutations 1000 \
+  --top-k-only
 
 uv run python scripts/make_dbfree_spatial_validation_figure.py \
   --results-dir results/dbfree_validation
@@ -73,16 +148,17 @@ uv run python scripts/check_dbfree_validation_acceptance.py \
   --results-dir results/dbfree_validation
 ```
 
-For final figure runs, omit `--smoke-only` and use `--n-permutations 1000`.
-The committed real-data manifests default to the acceptance-critical top-K
-enrichment tables. Set `compute_distance_decay: true` or
+For CI or local smoke tests, add `--smoke-only` and use a small
+`--n-permutations` value. The `--top-k-only` mode computes observed LR
+summaries and top-K enrichment without writing a per-pair null distribution;
+targeted tests verify that it matches the full null-distribution path on
+small data. Set `compute_distance_decay: true` or
 `compute_section_reproducibility: true` in `spatial_validation` when those
-heavier diagnostic source tables are needed. Set
+diagnostic source tables are needed. Set
 `write_celltype_pair_summary: true` or `write_null_distribution: true` only
 when those large intermediate tables are explicitly needed for audit.
-`distance_matrix_max_cells` controls whether each section caches one float32
-distance matrix for repeated null models; above that cell/bin count, pyccc
-falls back to block-wise distance reduction to avoid OOM.
+`spatial_weight_max_cells` controls the stratified cell/bin sample used for
+the repeated spatial kernel reductions in final top-K validation.
 
 ## Outputs
 

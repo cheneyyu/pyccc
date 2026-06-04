@@ -24,7 +24,10 @@ cellchat_reference_comparison/
 *.svg
 *.pdf
 *.html
+!docs/figures/
 !docs/**/*.png
 !docs/**/*.svg
 !docs/**/*.pdf
 !docs/**/*.html
+!docs/paper/results/
+!docs/paper/results/*.tsv

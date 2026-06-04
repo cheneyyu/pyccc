@@ -25,7 +25,7 @@ def main() -> None:
     summary = _read_all_dataset_table(results_dir, "spatial_validation_summary.tsv")
     decay = _read_all_dataset_table(results_dir, "spatial_validation_distance_decay.tsv")
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8.5), constrained_layout=True)
     _panel_workflow(axes[0, 0])
     _panel_topk(axes[0, 1], topk, dataset="artista_axolotl", title="B  ARTISTA top-K enrichment")
     _panel_distance_decay(axes[0, 2], decay, dataset="artista_axolotl")
@@ -43,7 +43,7 @@ def main() -> None:
 
 
 def _read_optional(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, sep="\t") if path.exists() else pd.DataFrame()
+    return pd.read_csv(path, sep="\t", low_memory=False) if path.exists() else pd.DataFrame()
 
 
 def _read_all_dataset_table(results_dir: Path, name: str) -> pd.DataFrame:
@@ -51,7 +51,7 @@ def _read_all_dataset_table(results_dir: Path, name: str) -> pd.DataFrame:
     for dataset_dir in _validated_dataset_dirs(results_dir):
         path = dataset_dir / name
         if path.exists():
-            frame = pd.read_csv(path, sep="\t")
+            frame = pd.read_csv(path, sep="\t", low_memory=False)
             if "dataset" not in frame.columns:
                 frame.insert(0, "dataset", dataset_dir.name)
             if not frame.empty:
@@ -156,7 +156,7 @@ def _panel_prediction_scale(ax, prediction: pd.DataFrame) -> None:
 
 
 def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
-    ax.set_title("C  ARTISTA distance-decay", loc="left")
+    ax.set_title("C  ARTISTA 30DPI distance-decay", loc="left")
     if decay.empty:
         _empty(ax, "No distance-decay table")
         return
@@ -164,12 +164,23 @@ def _panel_distance_decay(ax, decay: pd.DataFrame, *, dataset: str) -> None:
     if frame.empty:
         _empty(ax, f"No {dataset} rows")
         return
+    if "section_id" in frame.columns and "30DPI" in set(frame["section_id"].astype(str)):
+        frame = frame[frame["section_id"].astype(str) == "30DPI"].copy()
+    if "validation_strategy" in frame.columns:
+        keep = ["dbfree", "role_only", "embedding_cosine"]
+        focused = frame[frame["validation_strategy"].astype(str).isin(keep)].copy()
+        if not focused.empty:
+            frame = focused
     score_col = "model_weighted_mean_spatial_ccc_score" if "model_weighted_mean_spatial_ccc_score" in frame.columns else "mean_spatial_ccc_score"
     if score_col not in frame.columns:
         _empty(ax, "No distance-decay score")
         return
     frame["distance_mid"] = (pd.to_numeric(frame["distance_min"], errors="coerce") + pd.to_numeric(frame["distance_max"], errors="coerce")) / 2.0
-    for strategy, sub in frame.groupby("validation_strategy", sort=False):
+    strategy_order = ["dbfree", "role_only", "embedding_cosine", "expression_only"]
+    strategies = [item for item in strategy_order if item in set(frame["validation_strategy"].astype(str))]
+    strategies.extend(sorted(set(frame["validation_strategy"].astype(str)) - set(strategies)))
+    for strategy in strategies:
+        sub = frame[frame["validation_strategy"].astype(str) == strategy]
         grouped = sub.groupby("distance_mid", as_index=False)[score_col].mean()
         far = float(grouped.sort_values("distance_mid")[score_col].iloc[-1])
         values = grouped[score_col].to_numpy(dtype=float) / far if far > 0 else grouped[score_col].to_numpy(dtype=float)
@@ -216,7 +227,7 @@ def _panel_spatial_example(ax, summary: pd.DataFrame, results_dir: Path) -> None
         (_short_gene(receptor), _gene_vector(adata, receptor)),
     ]
     for i, (title, values) in enumerate(panels):
-        subax = ax.inset_axes([0.02 + i * 0.29, 0.25, 0.25, 0.56])
+        subax = ax.inset_axes([0.02 + i * 0.28, 0.25, 0.22, 0.56])
         if values is None:
             _empty(subax, "missing")
             continue
@@ -227,9 +238,6 @@ def _panel_spatial_example(ax, summary: pd.DataFrame, results_dir: Path) -> None
         subax.set_aspect("equal")
         for spine in subax.spines.values():
             spine.set_visible(False)
-        if title != "groups":
-            colorbar = plt.colorbar(scatter, ax=subax, fraction=0.046, pad=0.01)
-            colorbar.ax.tick_params(labelsize=6, length=2)
     score = float(example.get("model_weighted_spatial_ccc_score", np.nan))
     dataset = str(example["dataset"]).replace("_", " ")
     section = str(example["section_id"])
@@ -247,6 +255,16 @@ def _select_spatial_example(summary: pd.DataFrame) -> dict[str, object] | None:
         dbfree = frame[frame["validation_strategy"].astype(str) == "dbfree"].copy()
         if not dbfree.empty:
             frame = dbfree
+    if "dataset" in frame:
+        artista = frame[frame["dataset"].astype(str) == "artista_axolotl"].copy()
+        if not artista.empty:
+            frame = artista
+    if "section_id" in frame:
+        preferred_sections = ["30DPI", "5DPI_1", "Control_Juv"]
+        preferred = frame[frame["section_id"].astype(str).isin(preferred_sections)].copy()
+        if not preferred.empty:
+            preferred["_section_rank"] = preferred["section_id"].astype(str).map({section: i for i, section in enumerate(preferred_sections)}).fillna(len(preferred_sections))
+            frame = preferred
     if "kernel" in frame:
         exp = frame[frame["kernel"].astype(str) == "exp"].copy()
         if not exp.empty:
@@ -254,7 +272,9 @@ def _select_spatial_example(summary: pd.DataFrame) -> dict[str, object] | None:
     score_col = "model_weighted_spatial_ccc_score" if "model_weighted_spatial_ccc_score" in frame.columns else "spatial_ccc_score"
     if score_col not in frame:
         return None
-    item = frame.sort_values(score_col, ascending=False).iloc[0].to_dict()
+    sort_cols = ["_section_rank", score_col] if "_section_rank" in frame.columns else [score_col]
+    ascending = [True, False] if "_section_rank" in frame.columns else [False]
+    item = frame.sort_values(sort_cols, ascending=ascending).iloc[0].to_dict()
     item["model_weighted_spatial_ccc_score"] = item.get(score_col, np.nan)
     return item
 

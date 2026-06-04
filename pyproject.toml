@@ -66,6 +66,32 @@ Documentation = "https://github.com/cheneyyu/pyccc#readme"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = [
+    "/.venv",
+    "/.uv-cache",
+    "/build",
+    "/data",
+    "/dist",
+    "/docs/_build",
+    "/figures",
+    "/goal.md",
+    "/results",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.venv/**",
+    "/.uv-cache/**",
+    "/build/**",
+    "/data/**",
+    "/dist/**",
+    "/docs/_build/**",
+    "/figures/**",
+    "/goal.md",
+    "/results/**",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyccc"]
 

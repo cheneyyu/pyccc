@@ -11,14 +11,20 @@ CCC, and can export results back to CellChat R objects for R-native plotting.
 
 installation
 lr_resources
-lr_resource_training
-dbfree_ccc
-dbfree_validation
 spatial_validation
 plotting_gallery
 million_cell_scaling
 reproducibility
 cellchat_visual_coverage
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: DB-free CCC
+
+lr_resource_training
+dbfree_ccc
+dbfree_validation
 predictor_model_card
 ```
 

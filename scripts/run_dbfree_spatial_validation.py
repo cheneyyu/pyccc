@@ -13,6 +13,8 @@ from scipy import sparse
 from scipy.spatial.distance import cdist
 
 import pyccc as pc
+from pyccc import spatial_validation as sv
+from pyccc.database import normalize_lr_table
 from dbfree_validation_utils import (
     checksum_short,
     load_manifest,
@@ -35,6 +37,8 @@ def main() -> None:
     parser.add_argument("--smoke-only", action="store_true")
     parser.add_argument("--n-permutations", type=int, default=None)
     parser.add_argument("--baseline", action="append", choices=BASELINES, default=[])
+    parser.add_argument("--null-model", action="append", default=[], help="Override manifest null models; may be repeated.")
+    parser.add_argument("--top-k-only", action="store_true", help="Use a memory-light path that computes observed summaries and top-K null enrichment without writing per-pair null distributions.")
     parser.add_argument("--distance-decay-only", action="store_true", help="Only regenerate spatial_validation_distance_decay.tsv without overwriting null/enrichment tables.")
     args = parser.parse_args()
 
@@ -46,6 +50,7 @@ def main() -> None:
     if args.distance_decay_only:
         n_permutations = 0
     baselines = tuple(args.baseline or BASELINES)
+    null_models = tuple(args.null_model or spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation")))
     top_k_values = tuple(int(k) for k in spatial_cfg.get("top_k", (100, 500, 1000, 5000)))
     compute_distance_decay = bool(spatial_cfg.get("compute_distance_decay", True))
     compute_section_reproducibility = bool(spatial_cfg.get("compute_section_reproducibility", True))
@@ -55,6 +60,8 @@ def main() -> None:
     distance_matrix_max_cells = None if distance_matrix_max_cells is None else int(distance_matrix_max_cells)
     distance_decay_max_cells = spatial_cfg.get("distance_decay_max_cells", 5000)
     distance_decay_max_cells = None if distance_decay_max_cells is None else int(distance_decay_max_cells)
+    spatial_weight_max_cells = spatial_cfg.get("spatial_weight_max_cells", None)
+    spatial_weight_max_cells = None if spatial_weight_max_cells is None else int(spatial_weight_max_cells)
     dbfree_score_cfg = dict(spatial_cfg.get("dbfree_score", {}))
     prepared = _prepared_paths(results_dir, sections)
     predicted_lr = _load_or_predict_lr(manifest, results_dir, args.predicted_lr, prepared)
@@ -89,6 +96,28 @@ def main() -> None:
                 )
                 report_tables["distance_decay"].append(_with_context(decay, context))
                 continue
+            if args.top_k_only:
+                fast_report = _fast_topk_validation(
+                    adata,
+                    lr_table,
+                    groupby="pyccc_group",
+                    spatial_key="spatial",
+                    gene_id_key="gene_id",
+                    section_key="section_id",
+                    distance_kernels=tuple(spatial_cfg.get("distance_kernels", ("contact", "exp"))),
+                    null_models=null_models,
+                    top_k_values=top_k_values,
+                    n_permutations=n_permutations,
+                    random_state=int(spatial_cfg.get("random_seed", 0)),
+                    distance_matrix_max_cells=distance_matrix_max_cells,
+                    spatial_weight_max_cells=spatial_weight_max_cells,
+                    distance_decay_max_cells=distance_decay_max_cells,
+                    compute_distance_decay=compute_distance_decay,
+                    compute_section_reproducibility=compute_section_reproducibility,
+                )
+                for key, frame in fast_report.items():
+                    report_tables[key].append(_with_context(frame, context))
+                continue
             report = pc.validate_spatial_lr_table(
                 adata,
                 lr_table=lr_table,
@@ -97,7 +126,7 @@ def main() -> None:
                 gene_symbols_key="gene_id",
                 section_key="section_id",
                 distance_kernels=tuple(spatial_cfg.get("distance_kernels", ("contact", "exp"))),
-                null_models=() if args.distance_decay_only else tuple(spatial_cfg.get("null_models", ("coordinate_permutation", "celltype_permutation", "matched_random_lr", "score_permutation"))),
+                null_models=() if args.distance_decay_only else null_models,
                 n_permutations=n_permutations,
                 random_state=int(spatial_cfg.get("random_seed", 0)),
                 top_k=top_k_values,
@@ -441,19 +470,465 @@ def _fast_distance_decay(
     return pd.concat(rows, ignore_index=True)
 
 
+def _fast_topk_validation(
+    adata,
+    lr_table: pd.DataFrame,
+    *,
+    groupby: str,
+    spatial_key: str,
+    gene_id_key: str,
+    section_key: str,
+    distance_kernels: Sequence[str],
+    null_models: Sequence[str],
+    top_k_values: Sequence[int],
+    n_permutations: int,
+    random_state: int,
+    distance_matrix_max_cells: int | None,
+    spatial_weight_max_cells: int | None,
+    distance_decay_max_cells: int | None,
+    compute_distance_decay: bool,
+    compute_section_reproducibility: bool,
+) -> dict[str, pd.DataFrame]:
+    del compute_section_reproducibility
+    coords = np.asarray(adata.obsm[spatial_key], dtype=float)
+    groups = adata.obs[groupby].astype(str).to_numpy()
+    sections = adata.obs[section_key].astype(str).to_numpy() if section_key in adata.obs else None
+    weight_idx = _stratified_spatial_sample(groups, max_cells=spatial_weight_max_cells, random_state=random_state)
+    weight_coords = coords[weight_idx]
+    weight_groups = groups[weight_idx]
+    weight_sections = sections[weight_idx] if sections is not None else None
+    gene_names = sv._gene_names(adata, gene_symbols_key=gene_id_key)
+    lr = normalize_lr_table(lr_table)
+    lr = sv._filter_lr(lr, set(gene_names))
+    if lr.empty:
+        raise ValueError("No LR rows have ligand and receptor genes in the expression matrix.")
+    radius = sv._resolve_radius(coords, adata, "auto")
+    sigma = sv._resolve_sigma(coords, "auto", fallback=radius)
+    genes = sorted(set(lr["ligand"].astype(str)).union(set(lr["receptor"].astype(str))))
+    lr_expression = _expression_matrix_for_genes(adata, gene_names, genes)
+    expr_means = _fast_group_expression_means_from_matrix(lr_expression, groups)
+    gene_expression = sv._gene_expression_means(adata, gene_names)
+    distance_matrix = sv._distance_matrix_cache(weight_coords, max_cells=distance_matrix_max_cells)
+    kernel_matrices = _precomputed_kernel_matrices(weight_coords, radius=radius, sigma=sigma, kernels=distance_kernels, distance_matrix=distance_matrix)
+    base_weights = _weight_tables_from_kernel_matrices(weight_groups, kernel_matrices)
+    summary = _fast_score_lr_summary(lr, expr_means, base_weights)
+    summary = _add_empty_null_stat_columns(summary)
+    role_kernel = sv._role_kernel_enrichment(summary)
+    top_k = _fast_top_k_enrichment(
+        lr,
+        adata,
+        weight_coords,
+        weight_groups,
+        gene_names,
+        expr_means,
+        lr_expression,
+        gene_expression,
+        base_weights,
+        summary,
+        radius=radius,
+        sigma=sigma,
+        kernels=distance_kernels,
+        null_models=null_models,
+        top_k_values=top_k_values,
+        n_permutations=n_permutations,
+        random_state=random_state,
+        sections=weight_sections,
+        full_groups=groups,
+        full_sections=sections,
+        weight_idx=weight_idx,
+        kernel_matrices=kernel_matrices,
+    )
+    distance_decay = (
+        _fast_distance_decay(
+            adata,
+            lr,
+            groupby=groupby,
+            spatial_key=spatial_key,
+            gene_id_key=gene_id_key,
+            max_cells=distance_decay_max_cells,
+            random_state=random_state,
+        )
+        if compute_distance_decay
+        else pd.DataFrame(columns=["ligand", "receptor", "distance_min", "distance_max", "mean_distance", "mean_spatial_ccc_score", "model_weighted_mean_spatial_ccc_score"])
+    )
+    return {
+        "summary": summary,
+        "celltype_pair_summary": pd.DataFrame(),
+        "null_distribution": pd.DataFrame(),
+        "top_k_enrichment": top_k,
+        "role_kernel_enrichment": role_kernel,
+        "distance_decay": distance_decay,
+        "section_reproducibility": pd.DataFrame(),
+    }
+
+
+def _fast_top_k_enrichment(
+    lr: pd.DataFrame,
+    adata,
+    coords: np.ndarray,
+    groups: np.ndarray,
+    gene_names: pd.Index,
+    expr_means: pd.DataFrame,
+    lr_expression: tuple[list[str], object],
+    gene_expression: pd.Series,
+    base_weights: dict[str, pd.DataFrame],
+    summary: pd.DataFrame,
+    *,
+    radius: float,
+    sigma: float,
+    kernels: Sequence[str],
+    null_models: Sequence[str],
+    top_k_values: Sequence[int],
+    n_permutations: int,
+    random_state: int,
+    sections: np.ndarray | None,
+    full_groups: np.ndarray,
+    full_sections: np.ndarray | None,
+    weight_idx: np.ndarray,
+    kernel_matrices: dict[str, np.ndarray],
+) -> pd.DataFrame:
+    top_sets = _top_sets(summary, top_k_values=top_k_values)
+    values: dict[tuple[str, str, str, int], list[float]] = {
+        (kernel, score_col, null_model, k): []
+        for kernel, score_col, k in top_sets
+        for null_model in null_models
+    }
+    rng = np.random.default_rng(random_state)
+    all_expr_means = None
+    matched_pool = _matched_random_pool(lr, gene_expression) if "matched_random_lr" in set(map(str, null_models)) else None
+    n = max(int(n_permutations), 0)
+    for _ in range(n):
+        for null_model in null_models:
+            if null_model == "coordinate_permutation":
+                perm = rng.permutation(len(coords))
+                inverse = np.empty_like(perm)
+                inverse[perm] = np.arange(len(perm))
+                coord_groups = groups[inverse]
+                weights = _weight_tables_from_kernel_matrices(coord_groups, kernel_matrices)
+                null_summary = _fast_score_lr_summary(lr, expr_means, weights)
+            elif null_model == "celltype_permutation":
+                perm_groups = sv._permute_groups_for_celltype_null(full_groups, full_sections, rng)
+                perm_means = _fast_group_expression_means_from_matrix(lr_expression, perm_groups)
+                weights = _weight_tables_from_kernel_matrices(perm_groups[weight_idx], kernel_matrices)
+                null_summary = _fast_score_lr_summary(lr, perm_means, weights)
+            elif null_model == "matched_random_lr":
+                random_lr = _sample_matched_random_lr(matched_pool, rng) if matched_pool is not None else sv._matched_random_lr(lr, gene_expression, rng)
+                if all_expr_means is None:
+                    all_expr_means = _fast_group_expression_means_from_matrix((list(pd.Index(gene_names).astype(str)), adata.X), full_groups)
+                null_summary = _fast_score_lr_summary(random_lr, all_expr_means, base_weights)
+            elif null_model == "score_permutation":
+                permuted = lr.copy()
+                if "model_score" in permuted.columns:
+                    permuted["model_score"] = rng.permutation(permuted["model_score"].to_numpy())
+                null_summary = _fast_score_lr_summary(permuted, expr_means, base_weights)
+            else:
+                raise ValueError(f"Unsupported null model: {null_model}")
+            _append_top_null_values(values, top_sets, null_summary, null_model)
+    return _top_k_rows(summary, top_sets, values, null_models)
+
+
+def _matched_random_pool(lr: pd.DataFrame, gene_expression: pd.Series, *, pool_size: int = 10) -> dict[str, object]:
+    table = sv._gene_match_table(lr, gene_expression).reset_index(drop=True)
+    genes = table["gene"].astype(str).to_numpy() if "gene" in table else np.asarray([], dtype=str)
+    if len(genes) == 0:
+        return {"lr": lr.reset_index(drop=True), "ligand": [], "receptor": []}
+    gene_to_idx = {gene: i for i, gene in enumerate(genes)}
+    expr_q = _numeric_pool_array(table, "expression_quantile", default=0.0)
+    ligand_role = _numeric_pool_array(table, "ligand_role_score", default=0.5)
+    receptor_role = _numeric_pool_array(table, "receptor_role_score", default=0.5)
+    ligand_degree = _numeric_pool_array(table, "ligand_degree", default=0.0)
+    receptor_degree = _numeric_pool_array(table, "receptor_degree", default=0.0)
+    median_expr_q = float(np.nanmedian(expr_q)) if len(expr_q) else 0.0
+    pools = {"ligand": [], "receptor": []}
+    for row in lr.itertuples(index=False):
+        for side in ("ligand", "receptor"):
+            role = ligand_role if side == "ligand" else receptor_role
+            degree = ligand_degree if side == "ligand" else receptor_degree
+            gene = str(getattr(row, side))
+            idx = gene_to_idx.get(gene)
+            target_expr = float(expr_q[idx]) if idx is not None else median_expr_q
+            target_role = float(getattr(row, f"{side}_role_score", role[idx] if idx is not None else 0.5))
+            target_degree = float(degree[idx]) if idx is not None else 0.0
+            distance = np.abs(expr_q - target_expr) + np.abs(role - target_role) + np.abs(np.log1p(degree) - np.log1p(target_degree))
+            if idx is not None and len(distance) > 1:
+                distance = distance.copy()
+                distance[idx] = np.inf
+            finite = np.flatnonzero(np.isfinite(distance))
+            if len(finite) == 0:
+                pool = np.asarray([gene], dtype=str)
+            else:
+                take = min(int(pool_size), len(finite))
+                nearest = finite if take == len(finite) else finite[np.argpartition(distance[finite], take - 1)[:take]]
+                pool = genes[nearest]
+            pools[side].append(pool)
+    return {"lr": lr.reset_index(drop=True), **pools}
+
+
+def _numeric_pool_array(table: pd.DataFrame, col: str, *, default: float) -> np.ndarray:
+    if col not in table:
+        return np.full(len(table), float(default), dtype=float)
+    return pd.to_numeric(table[col], errors="coerce").fillna(default).to_numpy(dtype=float)
+
+
+def _sample_matched_random_lr(pool: dict[str, object], rng: np.random.Generator) -> pd.DataFrame:
+    lr = pool["lr"].copy()
+    ligand_pools = pool.get("ligand", [])
+    receptor_pools = pool.get("receptor", [])
+    ligands = []
+    receptors = []
+    for ligand_pool, receptor_pool in zip(ligand_pools, receptor_pools, strict=True):
+        ligands.append(str(ligand_pool[int(rng.integers(0, len(ligand_pool)))]))
+        receptors.append(str(receptor_pool[int(rng.integers(0, len(receptor_pool)))]))
+    if len(ligands) != len(lr):
+        ligands = lr["ligand"].astype(str).tolist()
+        receptors = lr["receptor"].astype(str).tolist()
+    out = lr.copy()
+    out["original_ligand"] = lr["ligand"].astype(str).to_numpy()
+    out["original_receptor"] = lr["receptor"].astype(str).to_numpy()
+    out["ligand"] = ligands
+    out["receptor"] = receptors
+    return out
+
+
+def _precomputed_kernel_matrices(
+    coords: np.ndarray,
+    *,
+    radius: float,
+    sigma: float,
+    kernels: Sequence[str],
+    distance_matrix: np.ndarray | None,
+) -> dict[str, np.ndarray]:
+    dist = distance_matrix if distance_matrix is not None else cdist(coords[:, :2], coords[:, :2])
+    out = {}
+    for kernel in kernels:
+        kernel_name = str(kernel)
+        if kernel_name == "contact":
+            out[kernel_name] = (dist <= radius).astype(float)
+        elif kernel_name == "exp":
+            out[kernel_name] = np.exp(-dist / sigma)
+        else:
+            raise ValueError("Distance kernels must be `contact` or `exp`.")
+    return out
+
+
+def _weight_tables_from_kernel_matrices(groups: Sequence[str], kernel_matrices: dict[str, np.ndarray]) -> dict[str, pd.DataFrame]:
+    group_values = np.asarray(groups).astype(str)
+    levels = np.asarray(sorted(set(group_values)), dtype=object)
+    if len(levels) == 0:
+        return {kernel: pd.DataFrame(columns=["source", "target", "kernel", "spatial_weight"]) for kernel in kernel_matrices}
+    codes = pd.Categorical(group_values, categories=levels).codes
+    eye = np.eye(len(levels), dtype=float)
+    onehot = eye[codes]
+    counts = np.bincount(codes, minlength=len(levels)).astype(float)
+    denominators = np.maximum(np.outer(counts, counts), 1.0)
+    tables = {}
+    for kernel, matrix in kernel_matrices.items():
+        weights = (onehot.T @ (matrix @ onehot)) / denominators
+        rows = [
+            {"source": str(source), "target": str(target), "kernel": str(kernel), "spatial_weight": float(weights[i, j])}
+            for i, source in enumerate(levels)
+            for j, target in enumerate(levels)
+        ]
+        tables[str(kernel)] = pd.DataFrame(rows)
+    return tables
+
+
+def _stratified_spatial_sample(groups: np.ndarray, *, max_cells: int | None, random_state: int) -> np.ndarray:
+    n = len(groups)
+    if max_cells is None or n <= int(max_cells):
+        return np.arange(n)
+    max_cells = max(int(max_cells), 1)
+    rng = np.random.default_rng(random_state)
+    groups = np.asarray(groups)
+    levels = sorted(set(groups.astype(str)))
+    selected = []
+    remaining = max_cells
+    for i, level in enumerate(levels):
+        idx = np.flatnonzero(groups.astype(str) == level)
+        if len(idx) == 0:
+            continue
+        levels_left = len(levels) - i
+        quota = max(1, int(round(max_cells * len(idx) / n)))
+        quota = min(quota, len(idx), max(1, remaining - (levels_left - 1)))
+        selected.extend(rng.choice(idx, size=quota, replace=False).tolist())
+        remaining -= quota
+        if remaining <= 0:
+            break
+    if len(selected) < max_cells:
+        missing = np.setdiff1d(np.arange(n), np.asarray(selected, dtype=int), assume_unique=False)
+        fill = min(max_cells - len(selected), len(missing))
+        if fill > 0:
+            selected.extend(rng.choice(missing, size=fill, replace=False).tolist())
+    return np.asarray(sorted(selected[:max_cells]), dtype=int)
+
+
+def _fast_score_lr_summary(lr: pd.DataFrame, expr_means: pd.DataFrame, weight_tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    rows = []
+    group_levels = pd.Index(expr_means.index.astype(str))
+    ligands = lr["ligand"].astype(str).to_numpy()
+    receptors = lr["receptor"].astype(str).to_numpy()
+    out_ligands = lr["original_ligand"].astype(str).to_numpy() if "original_ligand" in lr.columns else ligands
+    out_receptors = lr["original_receptor"].astype(str).to_numpy() if "original_receptor" in lr.columns else receptors
+    model_scores = pd.to_numeric(lr.get("model_score", pd.Series([1.0] * len(lr))), errors="coerce").fillna(1.0).to_numpy(dtype=float)
+    ligand_expr = expr_means.reindex(index=group_levels, columns=ligands, fill_value=0.0).to_numpy(dtype=float)
+    receptor_expr = expr_means.reindex(index=group_levels, columns=receptors, fill_value=0.0).to_numpy(dtype=float)
+    for kernel, weights in weight_tables.items():
+        matrix = (
+            weights.pivot(index="source", columns="target", values="spatial_weight")
+            .reindex(index=group_levels, columns=group_levels, fill_value=0.0)
+            .to_numpy(dtype=float)
+        )
+        spatial = np.einsum("ij,ik,jk->k", matrix, ligand_expr, receptor_expr, optimize=True) / max(matrix.size, 1)
+        frame = pd.DataFrame(
+            {
+                "ligand": out_ligands,
+                "receptor": out_receptors,
+                "kernel": str(kernel),
+                "spatial_ccc_score": spatial.astype(float),
+                "max_spatial_ccc_score": spatial.astype(float),
+                "model_weighted_spatial_ccc_score": spatial.astype(float) * model_scores,
+            }
+        )
+        for col in (
+            "model_score",
+            "confidence",
+            "density_rank",
+            "ligand_secreted_like_score",
+            "ligand_membrane_like_score",
+            "receptor_secreted_like_score",
+            "receptor_membrane_like_score",
+        ):
+            if col in lr.columns:
+                frame[col] = lr[col].to_numpy()
+        rows.append(frame)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def _expression_matrix_for_genes(adata, gene_names: Sequence[str], genes: Sequence[str]) -> tuple[list[str], object]:
+    gene_index = pd.Index(gene_names).astype(str)
+    lookup = {gene: i for i, gene in enumerate(gene_index)}
+    selected = [str(gene) for gene in genes if str(gene) in lookup]
+    cols = [lookup[gene] for gene in selected]
+    return selected, adata.X[:, cols]
+
+
+def _fast_group_expression_means(adata, groups: Sequence[str], gene_names: Sequence[str], genes: Sequence[str]) -> pd.DataFrame:
+    return _fast_group_expression_means_from_matrix(_expression_matrix_for_genes(adata, gene_names, genes), groups)
+
+
+def _fast_group_expression_means_from_matrix(expression: tuple[list[str], object], groups: Sequence[str]) -> pd.DataFrame:
+    selected, x = expression
+    group_values = np.asarray(groups).astype(str)
+    levels = np.asarray(sorted(set(group_values)), dtype=object)
+    if len(selected) == 0 or len(levels) == 0:
+        return pd.DataFrame(index=levels, columns=selected, dtype=float).fillna(0.0)
+    codes = pd.Categorical(group_values, categories=levels).codes
+    valid = codes >= 0
+    indicator = sparse.csr_matrix(
+        (np.ones(int(valid.sum()), dtype=float), (codes[valid], np.flatnonzero(valid))),
+        shape=(len(levels), len(group_values)),
+    )
+    sums = indicator @ x
+    sums = sums.toarray() if sparse.issparse(sums) else np.asarray(sums)
+    counts = np.bincount(codes[valid], minlength=len(levels)).astype(float)
+    means = sums / np.maximum(counts[:, None], 1.0)
+    return pd.DataFrame(means, index=levels.astype(str), columns=selected).fillna(0.0)
+
+
+def _add_empty_null_stat_columns(summary: pd.DataFrame) -> pd.DataFrame:
+    out = summary.copy()
+    out["spatial_enrichment_z"] = np.nan
+    out["empirical_pvalue"] = np.nan
+    out["model_weighted_spatial_enrichment_z"] = np.nan
+    out["model_weighted_empirical_pvalue"] = np.nan
+    return out
+
+
+def _top_sets(summary: pd.DataFrame, *, top_k_values: Sequence[int]) -> dict[tuple[str, str, int], dict[str, object]]:
+    out = {}
+    for kernel, sub in summary.groupby("kernel", sort=False):
+        sub = sub.reset_index(drop=True)
+        pair_keys = list(zip(sub["ligand"].astype(str), sub["receptor"].astype(str), strict=True))
+        for score_col in ("spatial_ccc_score", "model_weighted_spatial_ccc_score"):
+            ranked = sv._rank_top_predicted_pairs(sub, score_col=score_col)
+            for k in top_k_values:
+                kk = min(max(int(k), 1), len(ranked))
+                top = ranked.head(kk)
+                keys = top[["ligand", "receptor"]].drop_duplicates()
+                key_set = set(zip(keys["ligand"].astype(str), keys["receptor"].astype(str), strict=True))
+                positions = np.asarray([idx for idx, key in enumerate(pair_keys) if key in key_set], dtype=int)
+                out[(str(kernel), score_col, int(k))] = {
+                    "keys": keys,
+                    "positions": positions,
+                    "n_pairs": int(kk),
+                    "observed": float(top[score_col].astype(float).mean()) if not top.empty else np.nan,
+                }
+    return out
+
+
+def _append_top_null_values(
+    values: dict[tuple[str, str, str, int], list[float]],
+    top_sets: dict[tuple[str, str, int], dict[str, object]],
+    null_summary: pd.DataFrame,
+    null_model: str,
+) -> None:
+    for (kernel, score_col, k), top in top_sets.items():
+        positions = np.asarray(top["positions"], dtype=int)
+        if len(positions) == 0:
+            values[(kernel, score_col, null_model, k)].append(np.nan)
+            continue
+        sub = null_summary[null_summary["kernel"].astype(str) == kernel]
+        scores = pd.to_numeric(sub[score_col], errors="coerce").to_numpy(dtype=float)
+        if len(scores) <= int(positions.max(initial=-1)):
+            values[(kernel, score_col, null_model, k)].append(np.nan)
+            continue
+        values[(kernel, score_col, null_model, k)].append(float(np.nanmean(scores[positions])))
+
+
+def _top_k_rows(
+    summary: pd.DataFrame,
+    top_sets: dict[tuple[str, str, int], dict[str, object]],
+    values: dict[tuple[str, str, str, int], list[float]],
+    null_models: Sequence[str],
+) -> pd.DataFrame:
+    rows = []
+    del summary
+    for (kernel, score_col, k), top in top_sets.items():
+        observed = float(top["observed"]) if pd.notna(top["observed"]) else np.nan
+        for null_model in ("pooled", *[str(model) for model in null_models]):
+            if null_model == "pooled":
+                null_values = np.asarray(
+                    [item for model in null_models for item in values.get((kernel, score_col, str(model), k), [])],
+                    dtype=float,
+                )
+            else:
+                null_values = np.asarray(values.get((kernel, score_col, null_model, k), []), dtype=float)
+            null_values = null_values[np.isfinite(null_values)]
+            null_mean = float(null_values.mean()) if len(null_values) else np.nan
+            null_sd = float(null_values.std(ddof=1)) if len(null_values) > 1 else 0.0
+            z = 0.0 if len(null_values) and null_sd == 0 else ((observed - null_mean) / null_sd if len(null_values) else np.nan)
+            pvalue = float((np.sum(null_values >= observed) + 1) / (len(null_values) + 1)) if len(null_values) else np.nan
+            rows.append(
+                {
+                    "kernel": kernel,
+                    "score_type": score_col,
+                    "null_model": null_model,
+                    "k": int(k),
+                    "n_pairs": int(top["n_pairs"]),
+                    "observed_mean": observed,
+                    "null_mean": null_mean,
+                    "null_sd": null_sd,
+                    "top_k_enrichment_z": float(z) if pd.notna(z) else np.nan,
+                    "top_k_empirical_pvalue": pvalue,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def _group_expression_means_for_genes(adata, genes: Sequence[str], *, gene_id_key: str) -> pd.DataFrame:
     gene_names = adata.var[gene_id_key].astype(str) if gene_id_key in adata.var else pd.Index(adata.var_names.astype(str))
-    lookup = {gene: i for i, gene in enumerate(gene_names)}
-    cols = [lookup[gene] for gene in genes if gene in lookup]
-    selected = [gene for gene in genes if gene in lookup]
     groups = adata.obs["pyccc_group"].astype(str).to_numpy()
-    x = adata.X[:, cols]
-    rows = []
-    for group in sorted(set(groups)):
-        sub = x[groups == group]
-        values = np.asarray(sub.mean(axis=0)).ravel() if sparse.issparse(sub) else np.asarray(sub).mean(axis=0)
-        rows.append(pd.Series(values, index=selected, name=group))
-    return pd.DataFrame(rows).fillna(0.0)
+    return _fast_group_expression_means(adata, groups, gene_names, genes)
 
 
 def _global_gene_expression(adata, *, gene_id_key: str) -> pd.Series:
