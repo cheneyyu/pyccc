@@ -1,9 +1,12 @@
 # pyccc
 
-pyccc is an AnnData-native implementation of CellChat-compatible cell-cell
-communication analysis. It keeps inference results in tidy pandas tables,
-provides Matplotlib and plotnine plotting APIs, supports two-sample differential
-CCC, and can export results back to CellChat R objects for R-native plotting.
+pyccc is an AnnData-native, CellChat-compatible cell-cell communication toolkit.
+In regular mode, it reproduces the covered CellChat-style inference,
+differential analysis, and plotting outputs while scaling faster on matching
+workflows. It also provides DB-free ligand-receptor prediction for species
+without curated LR databases. Results are stored in tidy pandas tables, plotting
+is available through Matplotlib and plotnine APIs, and CellChat R export is
+supported for R-native plotting.
 
 ```{toctree}
 :maxdepth: 2

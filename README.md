@@ -4,8 +4,11 @@
 [![Documentation Status](https://readthedocs.org/projects/pyccc/badge/?version=latest)](https://pyccc.readthedocs.io/en/latest/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-`pyccc` is a Python/Scanpy implementation of the most useful CellChat-style
-cell-cell communication workflow:
+`pyccc` is an AnnData-native, CellChat-compatible cell-cell communication
+toolkit for Scanpy. In regular mode, it reproduces the covered CellChat-style
+inference, differential analysis, and plotting outputs while scaling faster on
+matching workflows; it also includes DB-free ligand-receptor prediction for
+species without curated LR databases.
 
 Documentation: https://pyccc.readthedocs.io/en/latest/
 

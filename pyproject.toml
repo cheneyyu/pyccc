@@ -1,7 +1,7 @@
 [project]
 name = "pyccc"
 version = "0.1.0"
-description = "CellChat-like cell-cell communication analysis and plotting for Scanpy/AnnData."
+description = "AnnData-native, CellChat-compatible CCC with faster regular-mode scaling and DB-free LR prediction."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "pyccc contributors" }]
@@ -60,7 +60,7 @@ predict = [
 Homepage = "https://github.com/cheneyyu/pyccc"
 Repository = "https://github.com/cheneyyu/pyccc"
 Issues = "https://github.com/cheneyyu/pyccc/issues"
-Documentation = "https://github.com/cheneyyu/pyccc#readme"
+Documentation = "https://pyccc.readthedocs.io/en/latest/"
 
 [build-system]
 requires = ["hatchling"]
