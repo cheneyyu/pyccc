@@ -1,5 +1,0 @@
-gate	result	evidence
-pytest -q	78 passed, 4 skipped, 2 warnings	local
-sphinx-build -W -b html docs docs/_build/html	passed	local
-uv build	sdist and wheel built	local
-GitHub Actions	success on Python 3.10 and 3.11	https://github.com/cheneyyu/pyccc/actions/runs/26989277542

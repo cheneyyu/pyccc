@@ -1,4 +1,0 @@
-strategy	display_name	peak_cpu_percent	peak_cpu_cores	cpu_sample_count	cpu_affinity_count	cpu_affinity	openblas_num_threads	omp_num_threads	mkl_num_threads	numexpr_num_threads	n_jobs
-pyccc_python	pyccc native	133.16393972357204	1.3316393972357203	13	4	0-3	4	4	4	4	1
-pyccc_cellchat_bridge	pyccc + CellChat R plots	186.89843007087887	1.8689843007087887	65	4	0-3	4	4	4	4	1
-direct_cellchat	direct CellChat R	230.7105665778079	2.307105665778079	720	4	0-3	4	4	4	4	1

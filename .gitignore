@@ -32,4 +32,6 @@ cellchat_reference_comparison/
 !docs/**/*.html
 docs/paper/
 scripts/make_publication_figure.py
+scripts/make_manuscript_figures.py
+scripts/check_manuscript_artifacts.py
 docs/figures/publication_main_figure.png
