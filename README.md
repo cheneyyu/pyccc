@@ -32,8 +32,10 @@ Representative CellChat-style outputs, validation summaries, and gallery views:
 | Differential LR bubble | Pairwise pathway embedding | Outgoing role heatmap |
 | --- | --- | --- |
 | ![Differential ligand-receptor bubble](docs/figures/differential_lr_bubble.png) | ![Pairwise pathway embedding](docs/figures/pairwise_pathway_embedding.png) | ![Outgoing role heatmap comparison](docs/figures/role_heatmap_compare_outgoing.png) |
-| DB-free spatial validation | 1M-cell speedup | Communication network |
-| ![DB-free spatial validation](docs/figures/dbfree_spatial_validation_main.png) | ![Real 1M-cell CCC benchmark](docs/figures/runtime_real1m_speedup.png) | ![Communication network gallery](docs/figures/communication_network_gallery.png) |
+
+| Pathway river | Spatial network | Communication network |
+| --- | --- | --- |
+| ![Pathway river](docs/figures/pathway_river_gallery.png) | ![Spatial communication network](docs/figures/spatial_network_gallery.png) | ![Communication network gallery](docs/figures/communication_network_gallery.png) |
 
 ## Million-cell benchmark
 
