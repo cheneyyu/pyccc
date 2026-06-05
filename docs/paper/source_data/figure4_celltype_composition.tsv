@@ -1,0 +1,11 @@
+disease	cell_type	n_cells
+cytomegalovirus infection	CD14-positive, CD16-negative classical monocyte	102301
+cytomegalovirus infection	central memory CD4-positive, alpha-beta T cell	61493
+cytomegalovirus infection	effector memory CD4-positive, alpha-beta T cell	54058
+cytomegalovirus infection	effector memory CD8-positive, alpha-beta T cell	91217
+cytomegalovirus infection	naive thymus-derived CD4-positive, alpha-beta T cell	129079
+normal	CD14-positive, CD16-negative classical monocyte	142436
+normal	central memory CD4-positive, alpha-beta T cell	85419
+normal	effector memory CD4-positive, alpha-beta T cell	71140
+normal	effector memory CD8-positive, alpha-beta T cell	48218
+normal	naive thymus-derived CD4-positive, alpha-beta T cell	214639

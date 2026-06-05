@@ -1,0 +1,7 @@
+panel	title	asset_path	message	asset_exists	manuscript_ready
+A	Differential LR bubble	docs/figures/differential_lr_bubble.png	LR-level differential CCC	True	True
+B	Communication network	docs/figures/communication_network_gallery.png	source-target network weights	True	True
+C	Pathway embedding	docs/figures/pairwise_pathway_embedding.png	pathway organization	True	True
+D	Role heatmap	docs/figures/role_heatmap_compare_outgoing.png	outgoing signaling roles	True	True
+E	Pathway river	docs/figures/pathway_river_gallery.png	pattern/pathway flow	True	True
+F	Spatial network	docs/figures/spatial_network_gallery.png	spatial CCC visualization	True	True

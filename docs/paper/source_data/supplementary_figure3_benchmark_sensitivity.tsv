@@ -1,0 +1,13 @@
+source_path	strategy	scale_label	status	n_cells	n_genes	total_seconds	compute_seconds	plot_seconds	export_seconds	r_seconds	n_interactions	maxrss_mb	error_summary
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_1000000/runtime.tsv	pyccc_python	cells_1000000	ok	1000000	787	54.787976327999786	53.88336061900191	0.9046136010001646	0.0	0.0	5.0	64778.3359375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_1000000/runtime.tsv	pyccc_cellchat_bridge	cells_1000000	ok	1000000	787	79.05790977899596	55.4828107689973	0.0	6.281633917002182	17.29345334199752	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_1000000/runtime.tsv	direct_cellchat	cells_1000000	failed	1000000	787							70475.77734375	failed during local sensitivity run
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_125000/runtime.tsv	pyccc_python	cells_125000	ok	125000	787	10.68480663000082	9.846270725000068	0.8385338860025513	0.0	0.0	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_125000/runtime.tsv	pyccc_cellchat_bridge	cells_125000	ok	125000	787	22.564418071000546	8.933809226000449	0.0	0.5039082199946279	13.126687436000791	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_125000/runtime.tsv	direct_cellchat	cells_125000	failed	125000	787							70475.77734375	failed during local sensitivity run
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_250000/runtime.tsv	pyccc_python	cells_250000	ok	250000	787	18.29437849800161	17.45260404200235	0.8417724710016046	0.0	0.0	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_250000/runtime.tsv	pyccc_cellchat_bridge	cells_250000	ok	250000	787	31.421162549995643	16.030062779995205	0.0	1.8464042929990685	13.544691921000776	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_250000/runtime.tsv	direct_cellchat	cells_250000	failed	250000	787							70475.77734375	failed during local sensitivity run
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_500000/runtime.tsv	pyccc_python	cells_500000	ok	500000	787	30.26276771799894	29.41349739400175	0.8492679869959829	0.0	0.0	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_500000/runtime.tsv	pyccc_cellchat_bridge	cells_500000	ok	500000	787	45.90071081300266	27.544340321001076	0.0	3.299355151997588	15.05701156899886	5.0	70475.77734375
+data/runtime_benchmark/human_immune_health_atlas_real1m/cells_500000/runtime.tsv	direct_cellchat	cells_500000	failed	500000	787							70475.77734375	failed during local sensitivity run

@@ -1,0 +1,9 @@
+source_dataset	dataset	section_id	input_path	prepared_path	n_cells_or_bins	n_genes	n_groups	spatial_key_found	groupby_column_used	raw_count_layer_found	normalization_applied	n_expression_genes
+artista_axolotl	artista_axolotl	Stage44	data/dbfree_validation/artista_axolotl/raw/Stage44.h5ad	results/dbfree_validation/artista_axolotl/prepared/Stage44.h5ad	1477	13098	9	True	Annotation	counts	False	13098
+artista_axolotl	artista_axolotl	Control_Juv	data/dbfree_validation/artista_axolotl/raw/Control_Juv.h5ad	results/dbfree_validation/artista_axolotl/prepared/Control_Juv.h5ad	11698	19081	17	True	Annotation	counts	False	19081
+artista_axolotl	artista_axolotl	Adult	data/dbfree_validation/artista_axolotl/raw/Adult.h5ad	results/dbfree_validation/artista_axolotl/prepared/Adult.h5ad	8243	22144	16	True	Annotation	counts	False	22144
+artista_axolotl	artista_axolotl	5DPI_1	data/dbfree_validation/artista_axolotl/raw/5DPI_1.h5ad	results/dbfree_validation/artista_axolotl/prepared/5DPI_1.h5ad	8106	28741	19	True	Annotation	counts	False	28741
+artista_axolotl	artista_axolotl	30DPI	data/dbfree_validation/artista_axolotl/raw/30DPI.h5ad	results/dbfree_validation/artista_axolotl/prepared/30DPI.h5ad	9252	19909	17	True	Annotation	counts	False	19909
+artista_axolotl	artista_axolotl	60DPI	data/dbfree_validation/artista_axolotl/raw/60DPI.h5ad	results/dbfree_validation/artista_axolotl/prepared/60DPI.h5ad	10964	20038	16	True	Annotation	counts	False	20038
+sota_soybean	sota_soybean	SAM	data/dbfree_validation/sota_soybean/raw/SAM.spatial.h5ad	results/dbfree_validation/sota_soybean/prepared/SAM.h5ad	2239	13733	5	True	celltype		False	13733
+sota_soybean	sota_soybean	Leaf	data/dbfree_validation/sota_soybean/raw/Leaf.spatial.h5ad	results/dbfree_validation/sota_soybean/prepared/Leaf.h5ad	2391	25913	5	True	celltype		False	25913

@@ -1,0 +1,20 @@
+feature	pyccc_api_exists	python_plot_exists	source_table_exists	example_asset_exists	tested	manuscript_ready
+network circle	True	True	True	True	True	True
+network heatmap	True	True	True	True	True	True
+chord	True	True	True	False	True	False
+bubble	True	True	True	True	True	True
+pathway heatmap	True	True	True	True	True	True
+LR contribution	True	True	True	False	True	False
+role scatter	True	True	True	False	True	False
+role heatmap	True	True	True	True	True	True
+rank signaling	True	True	True	True	True	True
+differential network	True	True	True	True	True	True
+pathway river	True	True	True	True	True	True
+pattern extraction	True	True	True	True	True	True
+spatial communication	True	True	True	True	True	True
+cofactor-aware scoring	True	False	True	False	True	True
+DE gate	True	False	True	False	True	True
+CellChat R export	True	False	True	True	True	True
+LIANA import/run support	True	False	True	False	True	False
+DB-free LR prediction	True	False	True	True	True	True
+spatial validation	True	True	True	True	True	True
