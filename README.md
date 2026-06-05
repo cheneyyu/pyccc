@@ -47,25 +47,25 @@ differential, and matched visualization workflow faster through pyccc:
 
 ![Real 1M-cell CCC benchmark](docs/figures/runtime_real1m_speedup.png)
 
-Reproduce the benchmark:
+The sampled h5ad, LR table, and CellChat MatrixMarket directory are local
+prepared inputs generated once from the full h5ad and are not committed to Git.
+Reproduce the timed 4-core run:
 
 ```bash
-OPENBLAS_NUM_THREADS=64 OMP_NUM_THREADS=64 MKL_NUM_THREADS=64 NUMEXPR_NUM_THREADS=64 \
+taskset -c 0-3 env OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 \
 uv run python examples/three_way_runtime_benchmark.py \
-  --mode cellxgene \
-  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw \
-  --h5ad data/cellxgene/human_immune_health_atlas_1p82m.h5ad \
-  --use-raw \
+  --mode prepared \
+  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core_prepared \
+  --h5ad data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/prepared/human_immune_health_atlas_1m_top5_lrgenes.h5ad \
+  --lr-table data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/prepared/pyccc_lr.tsv \
+  --r-input-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/cells_1000000/r_input \
   --condition-key disease \
   --condition-a "cytomegalovirus infection" \
   --condition-b normal \
   --groupby cell_type \
   --gene-symbols-key feature_name \
-  --target-cells 1000000 \
-  --min-cells 125000 \
-  --n-groups 5 \
   --n-jobs 1 \
-  --timeout-seconds 600
+  --timeout-seconds 1200
 ```
 
 ## DB-free Target-Species Validation

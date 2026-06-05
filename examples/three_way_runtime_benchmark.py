@@ -7,6 +7,7 @@ import json
 import os
 import resource
 import subprocess
+import threading
 import textwrap
 import time
 import traceback
@@ -188,16 +189,20 @@ def main() -> None:
     os.environ.setdefault("MPLCONFIGDIR", str(out_dir / "matplotlib-cache"))
     if args.mode == "official":
         run_official(args, out_dir)
+    elif args.mode == "prepared":
+        run_prepared(args, out_dir)
     else:
         run_cellxgene_adaptive(args, out_dir)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare pyccc, pyccc-to-CellChat, and direct CellChat runtime.")
-    parser.add_argument("--mode", choices=["official", "cellxgene"], default="official")
+    parser.add_argument("--mode", choices=["official", "cellxgene", "prepared"], default="official")
     parser.add_argument("--out-dir", default="data/runtime_benchmark/official")
     parser.add_argument("--cache-dir", default="data/runtime_benchmark/cache")
     parser.add_argument("--h5ad", default="data/cellxgene/global_celltypist_immune_329k.h5ad")
+    parser.add_argument("--lr-table", default=None, help="Prepared pyccc ligand-receptor interaction table for --mode prepared.")
+    parser.add_argument("--r-input-dir", default=None, help="Prepared CellChat MatrixMarket input directory for --mode prepared.")
     parser.add_argument("--species", default="human", choices=["human", "mouse"])
     parser.add_argument("--annotation", default="Secreted Signaling")
     parser.add_argument("--condition-key", default=None)
@@ -232,6 +237,35 @@ def run_official(args: argparse.Namespace, out_dir: Path) -> None:
         args.gene_symbols_key = None
     lr_db, lr_r = load_lr(args, adata)
     run_three_way_for_adata(args, out_dir, adata, lr_db, lr_r, scale_label="official_full")
+
+
+def run_prepared(args: argparse.Namespace, out_dir: Path) -> None:
+    args = apply_defaults(args, {"condition_key": "disease", "condition_a": "cytomegalovirus infection", "condition_b": "normal", "groupby": "cell_type"})
+    if not args.lr_table:
+        raise ValueError("--mode prepared requires --lr-table.")
+    if not args.r_input_dir:
+        raise ValueError("--mode prepared requires --r-input-dir.")
+    start = time.perf_counter()
+    adata = ad.read_h5ad(args.h5ad)
+    sample_read_seconds = time.perf_counter() - start
+    if args.gene_symbols_key and args.gene_symbols_key not in adata.var:
+        args.gene_symbols_key = None
+    lr = pd.read_csv(args.lr_table, sep="\t")
+    lr_db = pc.CellChatDB(lr, name=Path(args.lr_table).stem)
+    lr_r = _cellchat_r_lr_use(lr)
+    input_dir = Path(args.r_input_dir)
+    if not has_r_input(input_dir):
+        raise FileNotFoundError(f"Prepared R input directory is incomplete: {input_dir}")
+    run_three_way_for_adata(
+        args,
+        out_dir,
+        adata,
+        lr_db,
+        lr_r,
+        scale_label=f"cells_{adata.n_obs}",
+        input_dir=input_dir,
+        sample_read_seconds=sample_read_seconds,
+    )
 
 
 def run_cellxgene_adaptive(args: argparse.Namespace, out_dir: Path) -> None:
@@ -341,12 +375,18 @@ def run_three_way_for_adata(
     lr_r: pd.DataFrame,
     *,
     scale_label: str,
+    input_dir: Path | None = None,
+    sample_read_seconds: float = 0.0,
 ) -> pd.DataFrame:
     out_dir.mkdir(parents=True, exist_ok=True)
     lr_path = out_dir / "cellchat_lr.tsv"
     lr_r.to_csv(lr_path, sep="\t", index=False)
-    input_dir = out_dir / "r_input"
-    write_r_input(adata, input_dir, groupby=args.groupby, condition_key=args.condition_key, gene_symbols_key=args.gene_symbols_key)
+    if input_dir is None:
+        input_dir = out_dir / "r_input"
+        write_r_input(adata, input_dir, groupby=args.groupby, condition_key=args.condition_key, gene_symbols_key=args.gene_symbols_key)
+    elif not has_r_input(input_dir):
+        raise FileNotFoundError(f"Prepared R input directory is incomplete: {input_dir}")
+    write_input_runtime(out_dir / "input_runtime.tsv", adata, sample_read_seconds, input_dir)
 
     rows = []
     for strategy, runner in [
@@ -356,15 +396,21 @@ def run_three_way_for_adata(
     ]:
         if strategy == "direct_cellchat" and args.skip_direct_cellchat:
             row = record_skip(strategy, scale_label, adata, "Skipped by --skip-direct-cellchat.")
+            row.update(empty_cpu_peak_metadata())
+            row.update(strategy_input_read_metadata(strategy, row, sample_read_seconds))
             row.update(runtime_metadata(args))
             rows.append(row)
             continue
         print(f"Running {strategy} on {adata.n_obs:,} cells", flush=True)
+        monitor = ProcessTreeCpuMonitor()
+        monitor.start()
         try:
             row = runner(args, out_dir / strategy, adata, lr_db, lr_path, input_dir, scale_label)
         except Exception as exc:
             row = record_failure(strategy, scale_label, adata, exc)
             (out_dir / f"{strategy}_failure.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        row.update(monitor.stop())
+        row.update(strategy_input_read_metadata(strategy, row, sample_read_seconds))
         row.update(runtime_metadata(args))
         rows.append(row)
         pd.DataFrame(rows).to_csv(out_dir / "runtime_partial.tsv", sep="\t", index=False)
@@ -535,6 +581,36 @@ def write_r_input(adata, out_dir: Path, *, groupby: str, condition_key: str, gen
     meta.to_csv(out_dir / "meta.tsv", sep="\t", index=False)
 
 
+def has_r_input(path: Path) -> bool:
+    return all((path / name).exists() for name in ["matrix.mtx", "genes.tsv", "cells.tsv", "meta.tsv"])
+
+
+def write_input_runtime(path: Path, adata, sample_read_seconds: float, input_dir: Path) -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "stage": "read_prepared_h5ad",
+                "seconds": float(sample_read_seconds),
+                "n_cells": int(adata.n_obs),
+                "n_genes": int(adata.n_vars),
+                "path": str(path.parent),
+                "r_input_dir": str(input_dir),
+            }
+        ]
+    )
+    frame.to_csv(path, sep="\t", index=False)
+
+
+def strategy_input_read_metadata(strategy: str, row: dict[str, object], sample_read_seconds: float) -> dict[str, object]:
+    input_read_seconds = float(sample_read_seconds) if strategy in {"pyccc_python", "pyccc_cellchat_bridge"} else 0.0
+    total_seconds = float(row["total_seconds"]) if row.get("status") == "ok" and pd.notna(row.get("total_seconds")) else np.nan
+    total_with_input = total_seconds + input_read_seconds if np.isfinite(total_seconds) else np.nan
+    return {
+        "input_read_seconds": input_read_seconds,
+        "total_with_input_read_seconds": total_with_input,
+    }
+
+
 def scale_adata(base, target_cells: int, *, condition_key: str, random_state: int, allow_repeated_cells: bool):
     rng = np.random.default_rng(random_state)
     if target_cells <= base.n_obs:
@@ -626,9 +702,133 @@ def record_skip(strategy, scale_label, adata, reason: str) -> dict[str, object]:
     return row
 
 
+class ProcessTreeCpuMonitor:
+    """Sample peak CPU usage for the current process and subprocess tree."""
+
+    def __init__(self, pid: int | None = None, *, interval: float = 0.2) -> None:
+        self.pid = int(pid or os.getpid())
+        self.interval = float(interval)
+        self.min_sample_seconds = max(0.05, self.interval * 0.5)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._last_time = 0.0
+        self._last_cpu_seconds = 0.0
+        self.peak_cpu_percent = 0.0
+        self.sample_count = 0
+
+    def start(self) -> None:
+        self._last_cpu_seconds = process_tree_cpu_seconds(self.pid)
+        self._last_time = time.perf_counter()
+        self.peak_cpu_percent = 0.0
+        self.sample_count = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> dict[str, object]:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.interval * 2.0))
+        self._sample()
+        return {
+            "peak_cpu_percent": float(self.peak_cpu_percent),
+            "peak_cpu_cores": float(self.peak_cpu_percent / 100.0),
+            "cpu_sample_count": int(self.sample_count),
+        }
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            self._sample()
+
+    def _sample(self) -> None:
+        with self._lock:
+            cpu_seconds = process_tree_cpu_seconds(self.pid)
+            now = time.perf_counter()
+            elapsed = now - self._last_time
+            if elapsed < self.min_sample_seconds:
+                return
+            cpu_delta = cpu_seconds - self._last_cpu_seconds
+            if cpu_delta >= 0:
+                self.peak_cpu_percent = max(self.peak_cpu_percent, 100.0 * cpu_delta / elapsed)
+                self.sample_count += 1
+            self._last_time = now
+            self._last_cpu_seconds = cpu_seconds
+
+
+def empty_cpu_peak_metadata() -> dict[str, object]:
+    return {"peak_cpu_percent": np.nan, "peak_cpu_cores": np.nan, "cpu_sample_count": 0}
+
+
+def process_tree_cpu_seconds(root_pid: int) -> float:
+    proc = Path("/proc")
+    if not proc.exists():
+        return time.process_time()
+
+    children: dict[int, list[int]] = {}
+    cpu_seconds: dict[int, float] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        tgid = linux_proc_tgid(entry / "status")
+        if tgid is not None and tgid != pid:
+            continue
+        parsed = parse_linux_proc_stat(entry / "stat")
+        if parsed is None:
+            continue
+        ppid, seconds = parsed
+        children.setdefault(ppid, []).append(pid)
+        cpu_seconds[pid] = seconds
+
+    total = 0.0
+    stack = [int(root_pid)]
+    seen: set[int] = set()
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        total += cpu_seconds.get(pid, 0.0)
+        stack.extend(children.get(pid, []))
+    return total
+
+
+def linux_proc_tgid(path: Path) -> int | None:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Tgid:"):
+                return int(line.split(":", 1)[1].strip())
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def parse_linux_proc_stat(path: Path) -> tuple[int, float] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    end = text.rfind(")")
+    if end < 0:
+        return None
+    fields = text[end + 2 :].split()
+    if len(fields) < 13:
+        return None
+    try:
+        ppid = int(fields[1])
+        user_ticks = int(fields[11])
+        system_ticks = int(fields[12])
+        ticks_per_second = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError):
+        return None
+    return ppid, float(user_ticks + system_ticks) / float(ticks_per_second)
+
+
 def runtime_metadata(args: argparse.Namespace) -> dict[str, object]:
     return {
         "cpu_count": os.cpu_count() or "",
+        "cpu_affinity_count": cpu_affinity_count(),
+        "cpu_affinity": cpu_affinity_summary(),
         "n_jobs": getattr(args, "n_jobs", ""),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", ""),
         "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS", ""),
@@ -636,6 +836,40 @@ def runtime_metadata(args: argparse.Namespace) -> dict[str, object]:
         "numexpr_num_threads": os.environ.get("NUMEXPR_NUM_THREADS", ""),
         "blas_threads": _blas_thread_summary(),
     }
+
+
+def cpu_affinity_count() -> int | str:
+    if not hasattr(os, "sched_getaffinity"):
+        return ""
+    try:
+        return len(os.sched_getaffinity(0))
+    except OSError:
+        return ""
+
+
+def cpu_affinity_summary() -> str:
+    if not hasattr(os, "sched_getaffinity"):
+        return ""
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+    except OSError:
+        return ""
+    if not cpus:
+        return ""
+    ranges: list[str] = []
+    start = prev = cpus[0]
+    for cpu in cpus[1:]:
+        if cpu == prev + 1:
+            prev = cpu
+            continue
+        ranges.append(format_cpu_range(start, prev))
+        start = prev = cpu
+    ranges.append(format_cpu_range(start, prev))
+    return ",".join(ranges)
+
+
+def format_cpu_range(start: int, end: int) -> str:
+    return str(start) if start == end else f"{start}-{end}"
 
 
 def _blas_thread_summary() -> str:
@@ -658,15 +892,17 @@ def maxrss_mb() -> float:
 
 def write_speedup_summary(frame: pd.DataFrame, path: Path) -> None:
     ok = frame[frame["status"].eq("ok")].copy()
+    seconds_col = runtime_seconds_column(frame)
     lines = ["# Three-way CCC runtime benchmark", ""]
     if not ok.empty:
         lines.extend(["| Strategy | Cells | Total seconds | Speedup vs direct CellChat | Status |", "| --- | ---: | ---: | ---: | --- |"])
-        direct = ok.loc[ok["strategy"].eq("direct_cellchat"), "total_seconds"]
+        direct = ok.loc[ok["strategy"].eq("direct_cellchat"), seconds_col]
         direct_seconds = float(direct.iloc[0]) if not direct.empty else np.nan
         for row in frame.itertuples(index=False):
-            speedup = direct_seconds / float(row.total_seconds) if row.status == "ok" and np.isfinite(direct_seconds) and float(row.total_seconds) > 0 else np.nan
+            seconds = float(getattr(row, seconds_col))
+            speedup = direct_seconds / seconds if row.status == "ok" and np.isfinite(direct_seconds) and seconds > 0 else np.nan
             speedup_text = f"{speedup:.2f}x" if np.isfinite(speedup) else "NA"
-            seconds_text = f"{float(row.total_seconds):.3f}" if row.status == "ok" else "NA"
+            seconds_text = f"{seconds:.3f}" if row.status == "ok" else "NA"
             lines.append(f"| {row.strategy} | {int(row.n_cells):,} | {seconds_text} | {speedup_text} | {row.status} |")
     lines.extend(["", "## Raw Rows", ""])
     lines.extend(["```text", frame.to_string(index=False), "```"])
@@ -677,6 +913,7 @@ def write_runtime_plot(frame: pd.DataFrame, path: Path) -> None:
     ok = frame[frame["status"].eq("ok")].copy()
     if ok.empty:
         return
+    seconds_col = runtime_seconds_column(ok)
     order = ["pyccc_python", "pyccc_cellchat_bridge", "direct_cellchat"]
     if "scale_label" in ok:
         labels = list(dict.fromkeys(ok["scale_label"].astype(str)))
@@ -701,21 +938,21 @@ def write_runtime_plot(frame: pd.DataFrame, path: Path) -> None:
         "pyccc_cellchat_bridge": "#41AB5D",
         "direct_cellchat": "#D95F0E",
     }
-    direct = ok.loc[ok["strategy"].astype(str).eq("direct_cellchat"), "total_seconds"]
+    direct = ok.loc[ok["strategy"].astype(str).eq("direct_cellchat"), seconds_col]
     direct_seconds = float(direct.iloc[0]) if not direct.empty else np.nan
 
     fig, ax = plt.subplots(figsize=(7.4, 3.6), constrained_layout=True)
     y = np.arange(len(ok))
-    ax.barh(y, ok["total_seconds"].astype(float), color=[colors[str(s)] for s in ok["strategy"]], height=0.62)
+    ax.barh(y, ok[seconds_col].astype(float), color=[colors[str(s)] for s in ok["strategy"]], height=0.62)
     ax.set_yticks(y, [display.get(str(s), str(s)) for s in ok["strategy"]])
     ax.invert_yaxis()
-    ax.set_xlabel("Total time for analysis + matched visualizations (seconds)")
+    ax.set_xlabel("Total time from prepared input read through matched visualizations (seconds)")
     ax.set_title("Real 1M-cell CCC benchmark")
     ax.grid(axis="x", color="#D0D7DE", linewidth=0.8, alpha=0.8)
     ax.set_axisbelow(True)
-    max_seconds = float(ok["total_seconds"].max())
+    max_seconds = float(ok[seconds_col].max())
     for i, row in enumerate(ok.itertuples(index=False)):
-        seconds = float(row.total_seconds)
+        seconds = float(getattr(row, seconds_col))
         if np.isfinite(direct_seconds) and seconds > 0:
             speedup = direct_seconds / seconds
             label = f"{seconds:.1f}s, {speedup:.2f}x"
@@ -742,6 +979,12 @@ def write_runtime_plot(frame: pd.DataFrame, path: Path) -> None:
     ax.set_xlim(0, max_seconds * 1.34)
     fig.savefig(path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+def runtime_seconds_column(frame: pd.DataFrame) -> str:
+    if "total_with_input_read_seconds" in frame.columns and frame["total_with_input_read_seconds"].notna().any():
+        return "total_with_input_read_seconds"
+    return "total_seconds"
 
 
 if __name__ == "__main__":

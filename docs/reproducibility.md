@@ -48,31 +48,32 @@ Dataset:
 - Grouping: `cell_type`
 
 The h5ad's main `X` matrix is scaled and contains negative values, which is not
-a valid direct CellChat input. The benchmark therefore uses `raw.X` for all
-three strategies:
+a valid direct CellChat input. The benchmark therefore prepares a local
+1,000,000-cell `raw.X` sample, matching LR table, and CellChat MatrixMarket
+directory first. Those prepared artifacts are ignored by Git. The timed public
+run starts from reading those prepared inputs:
 
 ```bash
-OPENBLAS_NUM_THREADS=64 OMP_NUM_THREADS=64 MKL_NUM_THREADS=64 NUMEXPR_NUM_THREADS=64 \
+taskset -c 0-3 env OPENBLAS_NUM_THREADS=4 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 NUMEXPR_NUM_THREADS=4 \
 uv run python examples/three_way_runtime_benchmark.py \
-  --mode cellxgene \
-  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw \
-  --h5ad data/cellxgene/human_immune_health_atlas_1p82m.h5ad \
-  --use-raw \
+  --mode prepared \
+  --out-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core_prepared \
+  --h5ad data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/prepared/human_immune_health_atlas_1m_top5_lrgenes.h5ad \
+  --lr-table data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/prepared/pyccc_lr.tsv \
+  --r-input-dir data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core/cells_1000000/r_input \
   --condition-key disease \
   --condition-a "cytomegalovirus infection" \
   --condition-b normal \
   --groupby cell_type \
   --gene-symbols-key feature_name \
-  --target-cells 1000000 \
-  --min-cells 125000 \
-  --n-groups 5 \
   --n-jobs 1 \
-  --timeout-seconds 600
+  --timeout-seconds 1200
 ```
 
 Expected local output:
 
-- `data/runtime_benchmark/human_immune_health_atlas_real1m_raw/adaptive_runtime.tsv`
+- `data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core_prepared/runtime.tsv`
+- `data/runtime_benchmark/human_immune_health_atlas_real1m_raw_4core_prepared/input_runtime.tsv`
 
 The top five cell types shared between conditions cover 1,100,447 real cells,
 so the 1,000,000-cell benchmark is sampled without replacement.
